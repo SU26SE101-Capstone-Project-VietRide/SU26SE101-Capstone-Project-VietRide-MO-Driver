@@ -8,8 +8,8 @@ import {
 import { Colors } from "@/constants/theme";
 import { OperationsProvider } from "@/features/operations/operations-context";
 import {
-  SessionProvider,
-  useSession,
+    SessionProvider,
+    useSession,
 } from "@/features/session/session-context";
 
 export default function TabLayout() {

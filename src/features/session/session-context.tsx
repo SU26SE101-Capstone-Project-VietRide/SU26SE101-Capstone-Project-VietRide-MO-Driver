@@ -163,9 +163,7 @@ export function SessionProvider({ children }: PropsWithChildren) {
   );
 
   return (
-    <SessionContext.Provider value={value}>
-      {children}
-    </SessionContext.Provider>
+    <SessionContext.Provider value={value}>{children}</SessionContext.Provider>
   );
 }
 

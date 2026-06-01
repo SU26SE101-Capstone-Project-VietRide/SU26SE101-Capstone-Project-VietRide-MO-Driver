@@ -1,26 +1,20 @@
 import { Redirect, useRouter } from "expo-router";
 import { useState } from "react";
-import {
-  ScrollView,
-  StyleSheet,
-  Text,
-  TextInput,
-  View,
-} from "react-native";
+import { ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { Fonts, Spacing } from "@/constants/theme";
 import {
-  ActionButton,
-  SectionTitle,
-  StatusChip,
-  SurfaceCard,
+    ActionButton,
+    SectionTitle,
+    StatusChip,
+    SurfaceCard,
 } from "@/features/operations/ui";
 import {
-  getHomeHrefForRole,
-  SAMPLE_CREW_ACCOUNTS,
-  useAuthenticatedSession,
-  useSession,
+    getHomeHrefForRole,
+    SAMPLE_CREW_ACCOUNTS,
+    useAuthenticatedSession,
+    useSession,
 } from "@/features/session/session-context";
 import { useTheme } from "@/hooks/use-theme";
 
@@ -143,7 +137,11 @@ export function LoginScreen() {
           ) : null}
 
           <View style={styles.actionRow}>
-            <ActionButton label="Đăng nhập" tone="primary" onPress={handleLogin} />
+            <ActionButton
+              label="Đăng nhập"
+              tone="primary"
+              onPress={handleLogin}
+            />
           </View>
         </SurfaceCard>
 
@@ -158,8 +156,12 @@ export function LoginScreen() {
               <View key={account.accountId} style={styles.accountCard}>
                 <View style={styles.accountHeader}>
                   <View style={styles.accountCopy}>
-                    <Text style={styles.accountName}>{account.displayName}</Text>
-                    <Text style={styles.accountMeta}>{account.operatorName}</Text>
+                    <Text style={styles.accountName}>
+                      {account.displayName}
+                    </Text>
+                    <Text style={styles.accountMeta}>
+                      {account.operatorName}
+                    </Text>
                   </View>
                   <StatusChip
                     label={account.role === "DRIVER" ? "Driver" : "Assistant"}
@@ -241,7 +243,9 @@ export function CrewSettingsScreen() {
 
         <View style={styles.sessionSummary}>
           <Text style={styles.sessionLine}>Crew ID: {crewId}</Text>
-          <Text style={styles.sessionLine}>Home route: {getHomeHrefForRole(role)}</Text>
+          <Text style={styles.sessionLine}>
+            Home route: {getHomeHrefForRole(role)}
+          </Text>
         </View>
 
         <ActionButton label="Đăng xuất" tone="danger" onPress={handleLogout} />
@@ -261,7 +265,9 @@ export function CrewSettingsScreen() {
               <View key={account.accountId} style={styles.accountCard}>
                 <View style={styles.accountHeader}>
                   <View style={styles.accountCopy}>
-                    <Text style={styles.accountName}>{account.displayName}</Text>
+                    <Text style={styles.accountName}>
+                      {account.displayName}
+                    </Text>
                     <Text style={styles.accountMeta}>{account.email}</Text>
                   </View>
                   <StatusChip
@@ -279,7 +285,11 @@ export function CrewSettingsScreen() {
 
                 <View style={styles.actionRow}>
                   <ActionButton
-                    label={isCurrentAccount ? "Đang đăng nhập" : "Chuyển sang tài khoản này"}
+                    label={
+                      isCurrentAccount
+                        ? "Đang đăng nhập"
+                        : "Chuyển sang tài khoản này"
+                    }
                     tone={isCurrentAccount ? "ghost" : "primary"}
                     small
                     onPress={() => handleSwitchAccount(account.accountId)}
