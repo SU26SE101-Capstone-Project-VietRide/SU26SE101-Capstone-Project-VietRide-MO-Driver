@@ -4,8 +4,10 @@ import { ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { Fonts, Spacing } from "@/constants/theme";
+import { NotificationBell } from "@/features/operations/role-screens";
 import {
     ActionButton,
+    OperationsScreen,
     SectionTitle,
     StatusChip,
     SurfaceCard,
@@ -223,12 +225,13 @@ export function CrewSettingsScreen() {
   };
 
   return (
-    <ScrollView contentContainerStyle={styles.settingsContent}>
+    <OperationsScreen
+      title="Cài đặt"
+      subtitle="Tài khoản và phiên làm việc"
+      headerRight={<NotificationBell />}
+    >
       <SurfaceCard accent delay={0}>
-        <SectionTitle
-          title="Tài khoản hiện tại"
-          subtitle="Trang này đóng vai trò settings tab để bạn logout hoặc đổi nhanh giữa các role mẫu."
-        />
+        <SectionTitle icon="account-circle" title="Tài khoản hiện tại" />
 
         <View style={styles.accountHeader}>
           <View style={styles.accountCopy}>
@@ -236,25 +239,45 @@ export function CrewSettingsScreen() {
             <Text style={styles.accountMeta}>{operatorName}</Text>
           </View>
           <StatusChip
-            label={role === "DRIVER" ? "Driver" : "Assistant"}
+            label={role === "DRIVER" ? "Tài xế" : "Phụ xe"}
             tone={role === "DRIVER" ? "primary" : "info"}
           />
         </View>
 
         <View style={styles.sessionSummary}>
-          <Text style={styles.sessionLine}>Crew ID: {crewId}</Text>
-          <Text style={styles.sessionLine}>
-            Home route: {getHomeHrefForRole(role)}
-          </Text>
+          <Text style={styles.sessionLine}>Mã nhân sự: {crewId}</Text>
         </View>
 
-        <ActionButton label="Đăng xuất" tone="danger" onPress={handleLogout} />
+        <ActionButton
+          icon="logout"
+          label="Đăng xuất"
+          tone="ghost"
+          onPress={handleLogout}
+        />
       </SurfaceCard>
+
+      {role === "ASSISTANT" ? (
+        <SurfaceCard delay={90}>
+          <SectionTitle
+            icon="report"
+            title="Báo cáo sự cố"
+            subtitle="Gửi sự cố, tai nạn về điều hành kèm vị trí và mô tả."
+          />
+
+          <ActionButton
+            icon="report"
+            label="Mở báo cáo sự cố"
+            tone="danger"
+            onPress={() => router.push("/assistant/incident")}
+          />
+        </SurfaceCard>
+      ) : null}
 
       <SurfaceCard delay={120}>
         <SectionTitle
-          title="Chuyển tài khoản mẫu"
-          subtitle="Nếu bạn muốn login qua lại giữa Driver và Assistant thì đổi ngay tại đây, không cần đổi env hay reload app."
+          icon="swap-horiz"
+          title="Đổi tài khoản"
+          subtitle="Chuyển nhanh giữa các tài khoản mẫu."
         />
 
         <View style={styles.accountList}>
@@ -271,7 +294,7 @@ export function CrewSettingsScreen() {
                     <Text style={styles.accountMeta}>{account.email}</Text>
                   </View>
                   <StatusChip
-                    label={account.role === "DRIVER" ? "Driver" : "Assistant"}
+                    label={account.role === "DRIVER" ? "Tài xế" : "Phụ xe"}
                     tone={account.role === "DRIVER" ? "primary" : "info"}
                   />
                 </View>
@@ -300,7 +323,7 @@ export function CrewSettingsScreen() {
           })}
         </View>
       </SurfaceCard>
-    </ScrollView>
+    </OperationsScreen>
   );
 }
 
@@ -441,12 +464,6 @@ const styles = StyleSheet.create({
   credentialValue: {
     color: "#F4F7F8",
     fontSize: 14,
-  },
-  settingsContent: {
-    gap: Spacing.three,
-    paddingHorizontal: Spacing.three,
-    paddingTop: Spacing.five,
-    paddingBottom: Spacing.seven,
   },
   sessionSummary: {
     gap: Spacing.one,

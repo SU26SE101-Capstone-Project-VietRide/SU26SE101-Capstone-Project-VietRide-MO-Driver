@@ -1,6 +1,6 @@
-import { Redirect } from "expo-router";
+import { Redirect, Stack } from "expo-router";
 
-import AppTabs from "@/components/app-tabs";
+import { Colors } from "@/constants/theme";
 import {
     getHomeHrefForRole,
     useSession,
@@ -17,5 +17,20 @@ export default function AssistantLayout() {
     return <Redirect href={getHomeHrefForRole(role)} />;
   }
 
-  return <AppTabs variant="assistant" />;
+  return (
+    <Stack screenOptions={{ headerShown: false }}>
+      <Stack.Screen name="(tabs)" />
+      <Stack.Screen
+        name="incident"
+        options={{
+          headerShown: true,
+          headerTitle: "",
+          headerBackTitle: "Quay lại",
+          headerTintColor: Colors.dark.text,
+          headerStyle: { backgroundColor: Colors.dark.background },
+          headerShadowVisible: false,
+        }}
+      />
+    </Stack>
+  );
 }

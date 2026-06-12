@@ -1,4 +1,9 @@
-import { type PropsWithChildren } from "react";
+import { MaterialIcons } from "@expo/vector-icons";
+import {
+    type ComponentProps,
+    type PropsWithChildren,
+    type ReactNode,
+} from "react";
 import {
     Pressable,
     ScrollView,
@@ -7,12 +12,15 @@ import {
     View,
     type ViewStyle,
 } from "react-native";
+
 import Animated, { FadeInDown } from "react-native-reanimated";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { BottomTabInset, Fonts, Spacing } from "@/constants/theme";
 import { type Tone } from "@/features/operations/mock-data";
 import { useTheme } from "@/hooks/use-theme";
+
+type MaterialIconName = ComponentProps<typeof MaterialIcons>["name"];
 
 const TONE_STYLES = {
   primary: {
@@ -49,9 +57,14 @@ const TONE_STYLES = {
 
 export function OperationsScreen({
   children,
+  headerRight,
   subtitle,
   title,
-}: PropsWithChildren<{ subtitle: string; title: string }>) {
+}: PropsWithChildren<{
+  headerRight?: ReactNode;
+  subtitle: string;
+  title: string;
+}>) {
   const insets = useSafeAreaInsets();
   const theme = useTheme();
 
@@ -71,8 +84,13 @@ export function OperationsScreen({
         ]}
       >
         <View style={styles.pageHeader}>
-          <Text style={styles.pageEyebrow}>VietRide Operations</Text>
-          <Text style={styles.pageTitle}>{title}</Text>
+          <View style={styles.pageHeaderTop}>
+            <View style={styles.pageHeaderTitles}>
+              <Text style={styles.pageEyebrow}>VietRide Operations</Text>
+              <Text style={styles.pageTitle}>{title}</Text>
+            </View>
+            {headerRight}
+          </View>
           <Text style={styles.pageSubtitle}>{subtitle}</Text>
         </View>
         {children}
@@ -109,16 +127,27 @@ export function SurfaceCard({
 }
 
 export function SectionTitle({
+  icon,
   subtitle,
   title,
 }: {
+  icon?: MaterialIconName;
   subtitle?: string;
   title: string;
 }) {
   return (
-    <View style={styles.sectionHeader}>
-      <Text style={styles.sectionTitle}>{title}</Text>
-      {subtitle ? <Text style={styles.sectionSubtitle}>{subtitle}</Text> : null}
+    <View style={styles.sectionHeaderRow}>
+      {icon ? (
+        <View style={styles.sectionIcon}>
+          <MaterialIcons name={icon} size={20} color="#02C39A" />
+        </View>
+      ) : null}
+      <View style={styles.sectionHeader}>
+        <Text style={styles.sectionTitle}>{title}</Text>
+        {subtitle ? (
+          <Text style={styles.sectionSubtitle}>{subtitle}</Text>
+        ) : null}
+      </View>
     </View>
   );
 }
@@ -126,13 +155,15 @@ export function SectionTitle({
 export function MetricTile({
   compact = false,
   hint,
+  icon,
   label,
   tone,
   value,
 }: {
   compact?: boolean;
-  hint: string;
-  label: string;
+  hint?: string;
+  icon?: MaterialIconName;
+  label?: string;
   tone: Tone;
   value: string;
 }) {
@@ -143,17 +174,38 @@ export function MetricTile({
       style={[
         styles.metricTile,
         compact && styles.metricTileCompact,
+        icon != null && styles.metricTileIcon,
         {
           backgroundColor: toneStyle.background,
           borderColor: toneStyle.border,
         },
       ]}
     >
-      <Text style={styles.metricLabel}>{label}</Text>
-      <Text style={[styles.metricValue, compact && styles.metricValueCompact]}>
+      {icon ? (
+        <MaterialIcons name={icon} size={22} color={toneStyle.text} />
+      ) : label ? (
+        <Text style={styles.metricLabel}>{label}</Text>
+      ) : null}
+      <Text
+        style={[
+          styles.metricValue,
+          compact && styles.metricValueCompact,
+          icon != null && styles.metricValueIcon,
+        ]}
+      >
         {value}
       </Text>
-      <Text style={[styles.metricHint, { color: toneStyle.text }]}>{hint}</Text>
+      {hint ? (
+        <Text
+          style={[
+            styles.metricHint,
+            icon != null && styles.metricHintIcon,
+            { color: toneStyle.text },
+          ]}
+        >
+          {hint}
+        </Text>
+      ) : null}
     </View>
   );
 }
@@ -179,11 +231,15 @@ export function StatusChip({ label, tone }: { label: string; tone: Tone }) {
 }
 
 export function ActionButton({
+  disabled = false,
+  icon,
   label,
   onPress,
   small = false,
   tone = "primary",
 }: {
+  disabled?: boolean;
+  icon?: MaterialIconName;
   label: string;
   onPress: () => void;
   small?: boolean;
@@ -194,6 +250,8 @@ export function ActionButton({
   return (
     <Pressable
       accessibilityRole="button"
+      accessibilityState={{ disabled }}
+      disabled={disabled}
       onPress={onPress}
       style={({ pressed }) => [
         styles.button,
@@ -201,20 +259,29 @@ export function ActionButton({
         {
           backgroundColor: buttonStyles.backgroundColor,
           borderColor: buttonStyles.borderColor,
-          opacity: pressed ? 0.88 : 1,
-          transform: [{ scale: pressed ? 0.985 : 1 }],
+          opacity: disabled ? 0.4 : pressed ? 0.88 : 1,
+          transform: [{ scale: pressed && !disabled ? 0.985 : 1 }],
         },
       ]}
     >
-      <Text
-        style={[
-          styles.buttonLabel,
-          small && styles.buttonLabelSmall,
-          { color: buttonStyles.textColor },
-        ]}
-      >
-        {label}
-      </Text>
+      <View style={styles.buttonContent}>
+        {icon ? (
+          <MaterialIcons
+            name={icon}
+            size={small ? 16 : 18}
+            color={buttonStyles.textColor}
+          />
+        ) : null}
+        <Text
+          style={[
+            styles.buttonLabel,
+            small && styles.buttonLabelSmall,
+            { color: buttonStyles.textColor },
+          ]}
+        >
+          {label}
+        </Text>
+      </View>
     </Pressable>
   );
 }
@@ -284,6 +351,16 @@ const styles = StyleSheet.create({
     gap: Spacing.one,
     marginBottom: Spacing.one,
   },
+  pageHeaderTop: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    justifyContent: "space-between",
+    gap: Spacing.two,
+  },
+  pageHeaderTitles: {
+    flex: 1,
+    gap: Spacing.one,
+  },
   pageEyebrow: {
     color: "#02C39A",
     fontFamily: Fonts.mono,
@@ -310,7 +387,23 @@ const styles = StyleSheet.create({
     gap: Spacing.three,
     overflow: "hidden",
   },
+  sectionHeaderRow: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    gap: Spacing.two,
+  },
+  sectionIcon: {
+    width: 40,
+    height: 40,
+    borderRadius: 14,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "rgba(2, 195, 154, 0.12)",
+    borderWidth: 1,
+    borderColor: "rgba(2, 195, 154, 0.24)",
+  },
   sectionHeader: {
+    flex: 1,
     gap: 6,
   },
   sectionTitle: {
@@ -334,6 +427,17 @@ const styles = StyleSheet.create({
   },
   metricTileCompact: {
     minHeight: 108,
+  },
+  metricTileIcon: {
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 4,
+  },
+  metricValueIcon: {
+    textAlign: "center",
+  },
+  metricHintIcon: {
+    textAlign: "center",
   },
   metricLabel: {
     color: "#94A3AE",
@@ -382,6 +486,12 @@ const styles = StyleSheet.create({
     minHeight: 40,
     paddingHorizontal: 14,
     paddingVertical: 10,
+  },
+  buttonContent: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 8,
   },
   buttonLabel: {
     fontSize: 15,

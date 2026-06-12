@@ -17,15 +17,15 @@ type TabVariant = "driver" | "assistant";
 
 const WEB_TABS = {
   driver: [
-    { name: "overview", label: "Tổng quan", href: "/driver" },
+    { name: "overview", label: "Lịch làm việc", href: "/driver" },
     { name: "trip", label: "Chuyến", href: "/driver/trip" },
     { name: "incident", label: "Sự cố", href: "/driver/incident" },
     { name: "support", label: "Hỗ trợ", href: "/driver/support" },
     { name: "settings", label: "Cài đặt", href: "/driver/settings" },
   ],
   assistant: [
-    { name: "overview", label: "Tổng quan", href: "/assistant" },
-    { name: "boarding", label: "Boarding", href: "/assistant/boarding" },
+    { name: "overview", label: "Lịch làm việc", href: "/assistant" },
+    { name: "boarding", label: "Đón khách", href: "/assistant/boarding" },
     { name: "cargo", label: "Hàng hóa", href: "/assistant/cargo" },
     { name: "stops", label: "Điểm dừng", href: "/assistant/stops" },
     { name: "support", label: "Hỗ trợ", href: "/assistant/support" },

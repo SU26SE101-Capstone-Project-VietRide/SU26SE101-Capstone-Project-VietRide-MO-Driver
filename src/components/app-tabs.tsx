@@ -9,9 +9,9 @@ const TAB_CONFIG = {
   driver: [
     {
       name: "index",
-      label: "Tổng quan",
-      sf: "rectangle.grid.2x2",
-      md: "dashboard",
+      label: "Lịch làm việc",
+      sf: "calendar",
+      md: "event_note",
     },
     { name: "trip", label: "Chuyến", sf: "map", md: "map" },
     {
@@ -36,11 +36,11 @@ const TAB_CONFIG = {
   assistant: [
     {
       name: "index",
-      label: "Tổng quan",
-      sf: "rectangle.grid.2x2",
-      md: "dashboard",
+      label: "Lịch làm việc",
+      sf: "calendar",
+      md: "event_note",
     },
-    { name: "boarding", label: "Boarding", sf: "person.3", md: "group" },
+    { name: "boarding", label: "Đón khách", sf: "person.3", md: "group" },
     { name: "cargo", label: "Hàng hóa", sf: "shippingbox", md: "inventory_2" },
     {
       name: "stops",
@@ -48,6 +48,8 @@ const TAB_CONFIG = {
       sf: "mappin.and.ellipse",
       md: "location_on",
     },
+    // Màn "Sự cố" của phụ xe truy cập qua nút trên màn Tổng quan, không thêm
+    // thành tab vì Android BottomNavigationView chỉ hỗ trợ tối đa 6 tab.
     {
       name: "support",
       label: "Hỗ trợ",
