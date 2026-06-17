@@ -1,9 +1,17 @@
+import { MaterialIcons } from "@expo/vector-icons";
 import { Redirect, useRouter } from "expo-router";
 import { useState } from "react";
-import { ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
+import {
+    Pressable,
+    ScrollView,
+    StyleSheet,
+    Text,
+    TextInput,
+    View,
+} from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
-import { Fonts, Spacing } from "@/constants/theme";
+import { Fonts, Spacing, type Palette } from "@/constants/theme";
 import { NotificationBell } from "@/features/operations/role-screens";
 import {
     ActionButton,
@@ -18,11 +26,13 @@ import {
     useAuthenticatedSession,
     useSession,
 } from "@/features/session/session-context";
-import { useTheme } from "@/hooks/use-theme";
+import { useThemeMode } from "@/features/theme/theme-mode";
+import { useTheme, useThemedStyles } from "@/hooks/use-theme";
 
 export function LoginScreen() {
   const router = useRouter();
   const theme = useTheme();
+  const styles = useThemedStyles(makeStyles);
   const insets = useSafeAreaInsets();
   const { isAuthenticated, login, loginAs, role } = useSession();
   const [email, setEmail] = useState("");
@@ -90,16 +100,13 @@ export function LoginScreen() {
           <Text style={styles.pageEyebrow}>VietRide Crew Access</Text>
           <Text style={styles.pageTitle}>Đăng nhập điều hành chuyến</Text>
           <Text style={styles.pageSubtitle}>
-            Bạn có thể login bằng tài khoản mẫu của Driver hoặc Phụ xe và logout
-            để chuyển role ngay trong app.
+            Đăng nhập bằng tài khoản mẫu của tài xế hoặc phụ xe, có thể đăng xuất
+            để đổi vai trò ngay trong app.
           </Text>
         </View>
 
         <SurfaceCard accent delay={0}>
-          <SectionTitle
-            title="Đăng nhập"
-            subtitle="Form mock để test luồng auth, route guard và tabs theo role."
-          />
+          <SectionTitle title="Đăng nhập" />
 
           <View style={styles.inputStack}>
             <View style={styles.inputGroup}>
@@ -109,7 +116,7 @@ export function LoginScreen() {
                 autoCorrect={false}
                 keyboardType="email-address"
                 placeholder="driver.minhquan@vietride.vn"
-                placeholderTextColor="#6D7A83"
+                placeholderTextColor={theme.placeholder}
                 style={styles.input}
                 value={email}
                 onChangeText={setEmail}
@@ -122,7 +129,7 @@ export function LoginScreen() {
                 autoCapitalize="none"
                 autoCorrect={false}
                 placeholder="Driver@123"
-                placeholderTextColor="#6D7A83"
+                placeholderTextColor={theme.placeholder}
                 secureTextEntry
                 style={styles.input}
                 value={password}
@@ -150,7 +157,7 @@ export function LoginScreen() {
         <SurfaceCard delay={120}>
           <SectionTitle
             title="Tài khoản mẫu"
-            subtitle="Bạn có thể điền sẵn credential hoặc đăng nhập nhanh để nhảy giữa 2 role."
+            subtitle="Điền sẵn thông tin hoặc đăng nhập nhanh để đổi giữa 2 vai trò."
           />
 
           <View style={styles.accountList}>
@@ -166,7 +173,7 @@ export function LoginScreen() {
                     </Text>
                   </View>
                   <StatusChip
-                    label={account.role === "DRIVER" ? "Driver" : "Assistant"}
+                    label={account.role === "DRIVER" ? "Tài xế" : "Phụ xe"}
                     tone={account.role === "DRIVER" ? "primary" : "info"}
                   />
                 </View>
@@ -204,8 +211,16 @@ export function LoginScreen() {
   );
 }
 
+const THEME_OPTIONS = [
+  { key: "dark", label: "Tối", icon: "dark-mode" },
+  { key: "light", label: "Sáng", icon: "light-mode" },
+] as const;
+
 export function CrewSettingsScreen() {
   const router = useRouter();
+  const theme = useTheme();
+  const styles = useThemedStyles(makeStyles);
+  const { mode, setMode } = useThemeMode();
   const { accounts, loginAs, logout } = useSession();
   const { crewId, displayName, operatorName, role } = useAuthenticatedSession();
 
@@ -254,6 +269,46 @@ export function CrewSettingsScreen() {
           tone="ghost"
           onPress={handleLogout}
         />
+      </SurfaceCard>
+
+      <SurfaceCard delay={60}>
+        <SectionTitle
+          icon="palette"
+          title="Giao diện"
+          subtitle="Chọn chế độ hiển thị sáng hoặc tối."
+        />
+
+        <View style={styles.segment}>
+          {THEME_OPTIONS.map((option) => {
+            const active = mode === option.key;
+
+            return (
+              <Pressable
+                key={option.key}
+                accessibilityRole="button"
+                onPress={() => setMode(option.key)}
+                style={[
+                  styles.segmentItem,
+                  active && styles.segmentItemActive,
+                ]}
+              >
+                <MaterialIcons
+                  name={option.icon}
+                  size={18}
+                  color={active ? theme.onAccent : theme.textSecondary}
+                />
+                <Text
+                  style={[
+                    styles.segmentText,
+                    active && styles.segmentTextActive,
+                  ]}
+                >
+                  {option.label}
+                </Text>
+              </Pressable>
+            );
+          })}
+        </View>
       </SurfaceCard>
 
       {role === "ASSISTANT" ? (
@@ -331,169 +386,180 @@ export function SettingsScreen() {
   return <CrewSettingsScreen />;
 }
 
-const styles = StyleSheet.create({
-  screen: {
-    flex: 1,
-  },
-  orbPrimary: {
-    position: "absolute",
-    top: -80,
-    right: -40,
-    width: 220,
-    height: 220,
-    borderRadius: 999,
-    backgroundColor: "rgba(2, 195, 154, 0.12)",
-  },
-  orbSecondary: {
-    position: "absolute",
-    bottom: 40,
-    left: -60,
-    width: 180,
-    height: 180,
-    borderRadius: 999,
-    backgroundColor: "rgba(53, 194, 255, 0.08)",
-  },
-  content: {
-    gap: Spacing.three,
-    paddingHorizontal: Spacing.three,
-  },
-  pageHeader: {
-    gap: Spacing.one,
-    paddingTop: Spacing.one,
-    paddingBottom: Spacing.two,
-  },
-  pageEyebrow: {
-    color: "#02C39A",
-    fontFamily: Fonts.mono,
-    fontSize: 12,
-    letterSpacing: 1.2,
-    textTransform: "uppercase",
-  },
-  pageTitle: {
-    color: "#F4F7F8",
-    fontFamily: Fonts.rounded,
-    fontSize: 32,
-    fontWeight: 700,
-    lineHeight: 38,
-  },
-  pageSubtitle: {
-    color: "#B6C1C8",
-    fontSize: 15,
-    lineHeight: 24,
-  },
-  inputStack: {
-    gap: Spacing.three,
-  },
-  inputGroup: {
-    gap: Spacing.two,
-  },
-  inputLabel: {
-    color: "#D3DBDF",
-    fontSize: 14,
-    fontWeight: 600,
-  },
-  input: {
-    minHeight: 54,
-    borderRadius: 18,
-    borderWidth: 1,
-    borderColor: "#2C3942",
-    backgroundColor: "#151B20",
-    paddingHorizontal: Spacing.three,
-    color: "#F4F7F8",
-    fontSize: 15,
-  },
-  errorBanner: {
-    borderRadius: 20,
-    borderWidth: 1,
-    borderColor: "rgba(255, 82, 82, 0.24)",
-    backgroundColor: "rgba(255, 82, 82, 0.08)",
-    padding: Spacing.three,
-    gap: Spacing.two,
-  },
-  errorText: {
-    color: "#F4F7F8",
-    fontSize: 14,
-    lineHeight: 20,
-  },
-  actionRow: {
-    flexDirection: "row",
-    flexWrap: "wrap",
-    gap: Spacing.two,
-  },
-  accountList: {
-    gap: Spacing.three,
-  },
-  accountCard: {
-    gap: Spacing.two,
-    borderRadius: 22,
-    borderWidth: 1,
-    borderColor: "#2C3942",
-    backgroundColor: "#151B20",
-    padding: Spacing.three,
-  },
-  accountHeader: {
-    flexDirection: "row",
-    justifyContent: "space-between",
-    gap: Spacing.two,
-    alignItems: "flex-start",
-  },
-  accountCopy: {
-    flex: 1,
-    gap: 4,
-  },
-  accountName: {
-    color: "#F4F7F8",
-    fontFamily: Fonts.rounded,
-    fontSize: 18,
-    fontWeight: 700,
-  },
-  accountMeta: {
-    color: "#94A3AE",
-    fontSize: 14,
-    lineHeight: 20,
-  },
-  credentialWrap: {
-    gap: 4,
-  },
-  credentialLabel: {
-    color: "#94A3AE",
-    fontFamily: Fonts.mono,
-    fontSize: 12,
-    textTransform: "uppercase",
-  },
-  credentialValue: {
-    color: "#F4F7F8",
-    fontSize: 14,
-  },
-  sessionSummary: {
-    gap: Spacing.one,
-  },
-  sessionLine: {
-    color: "#B6C1C8",
-    fontSize: 14,
-    lineHeight: 20,
-  },
-  rowBetween: {
-    flexDirection: "row",
-    justifyContent: "space-between",
-    gap: Spacing.two,
-    alignItems: "center",
-  },
-  switchRow: {
-    flexDirection: "row",
-    gap: Spacing.two,
-    alignItems: "center",
-  },
-  ghostPressable: {
-    paddingVertical: Spacing.two,
-    paddingHorizontal: Spacing.three,
-    borderRadius: 16,
-    borderWidth: 1,
-    borderColor: "rgba(148, 163, 174, 0.18)",
-  },
-  ghostPressableText: {
-    color: "#D3DBDF",
-    fontSize: 14,
-    fontWeight: 600,
-  },
-});
+const makeStyles = (c: Palette) =>
+  StyleSheet.create({
+    screen: {
+      flex: 1,
+    },
+    orbPrimary: {
+      position: "absolute",
+      top: -80,
+      right: -40,
+      width: 220,
+      height: 220,
+      borderRadius: 999,
+      backgroundColor: "rgba(2, 195, 154, 0.12)",
+    },
+    orbSecondary: {
+      position: "absolute",
+      bottom: 40,
+      left: -60,
+      width: 180,
+      height: 180,
+      borderRadius: 999,
+      backgroundColor: "rgba(53, 194, 255, 0.08)",
+    },
+    content: {
+      gap: Spacing.three,
+      paddingHorizontal: Spacing.three,
+    },
+    pageHeader: {
+      gap: Spacing.one,
+      paddingTop: Spacing.one,
+      paddingBottom: Spacing.two,
+    },
+    pageEyebrow: {
+      color: c.primary,
+      fontFamily: Fonts.mono,
+      fontSize: 12,
+      letterSpacing: 1.2,
+      textTransform: "uppercase",
+    },
+    pageTitle: {
+      color: c.text,
+      fontFamily: Fonts.rounded,
+      fontSize: 32,
+      fontWeight: 700,
+      lineHeight: 38,
+    },
+    pageSubtitle: {
+      color: c.textMeta,
+      fontSize: 15,
+      lineHeight: 24,
+    },
+    inputStack: {
+      gap: Spacing.three,
+    },
+    inputGroup: {
+      gap: Spacing.two,
+    },
+    inputLabel: {
+      color: c.textGhost,
+      fontSize: 14,
+      fontWeight: 600,
+    },
+    input: {
+      minHeight: 54,
+      borderRadius: 18,
+      borderWidth: 1,
+      borderColor: c.border,
+      backgroundColor: c.surface,
+      paddingHorizontal: Spacing.three,
+      color: c.text,
+      fontSize: 15,
+    },
+    errorBanner: {
+      borderRadius: 20,
+      borderWidth: 1,
+      borderColor: "rgba(255, 82, 82, 0.24)",
+      backgroundColor: "rgba(255, 82, 82, 0.08)",
+      padding: Spacing.three,
+      gap: Spacing.two,
+    },
+    errorText: {
+      color: c.text,
+      fontSize: 14,
+      lineHeight: 20,
+    },
+    actionRow: {
+      flexDirection: "row",
+      flexWrap: "wrap",
+      gap: Spacing.two,
+    },
+    accountList: {
+      gap: Spacing.three,
+    },
+    accountCard: {
+      gap: Spacing.two,
+      borderRadius: 22,
+      borderWidth: 1,
+      borderColor: c.border,
+      backgroundColor: c.surface,
+      padding: Spacing.three,
+    },
+    accountHeader: {
+      flexDirection: "row",
+      justifyContent: "space-between",
+      gap: Spacing.two,
+      alignItems: "flex-start",
+    },
+    accountCopy: {
+      flex: 1,
+      gap: 4,
+    },
+    accountName: {
+      color: c.text,
+      fontFamily: Fonts.rounded,
+      fontSize: 18,
+      fontWeight: 700,
+    },
+    accountMeta: {
+      color: c.textSecondary,
+      fontSize: 14,
+      lineHeight: 20,
+    },
+    credentialWrap: {
+      gap: 4,
+    },
+    credentialLabel: {
+      color: c.textSecondary,
+      fontFamily: Fonts.mono,
+      fontSize: 12,
+      textTransform: "uppercase",
+    },
+    credentialValue: {
+      color: c.text,
+      fontSize: 14,
+    },
+    sessionSummary: {
+      gap: Spacing.one,
+    },
+    sessionLine: {
+      color: c.textMeta,
+      fontSize: 14,
+      lineHeight: 20,
+    },
+    rowBetween: {
+      flexDirection: "row",
+      justifyContent: "space-between",
+      gap: Spacing.two,
+      alignItems: "center",
+    },
+    segment: {
+      flexDirection: "row",
+      gap: 4,
+      padding: 4,
+      borderRadius: 14,
+      backgroundColor: c.tones.neutral.background,
+    },
+    segmentItem: {
+      flex: 1,
+      flexDirection: "row",
+      alignItems: "center",
+      justifyContent: "center",
+      gap: 6,
+      paddingVertical: 10,
+      borderRadius: 10,
+    },
+    segmentItemActive: {
+      backgroundColor: c.primary,
+    },
+    segmentText: {
+      color: c.textSecondary,
+      fontSize: 14,
+      fontWeight: 700,
+    },
+    segmentTextActive: {
+      color: c.onAccent,
+    },
+  });

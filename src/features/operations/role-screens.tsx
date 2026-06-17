@@ -12,7 +12,7 @@ import {
     View,
 } from "react-native";
 
-import { Fonts, Spacing } from "@/constants/theme";
+import { Fonts, Spacing, type Palette } from "@/constants/theme";
 import {
     buildDirectionsUrl,
     seatLayoutSeed,
@@ -32,6 +32,7 @@ import {
     SurfaceCard,
 } from "@/features/operations/ui";
 import { useAuthenticatedSession } from "@/features/session/session-context";
+import { useTheme, useThemedStyles } from "@/hooks/use-theme";
 
 const INCIDENT_CATEGORIES = [
   "TRAFFIC_JAM",
@@ -127,6 +128,7 @@ export function AssistantOverviewScreen() {
 }
 
 export function DriverTripScreen() {
+  const styles = useThemedStyles(makeStyles);
   const { currentStop, nextStop, pendingAtCurrentStopCount, routeStops, trip } =
     useOperations();
 
@@ -215,6 +217,8 @@ export function AssistantIncidentScreen() {
 }
 
 function IncidentReportScreen({ subtitle }: { subtitle: string }) {
+  const styles = useThemedStyles(makeStyles);
+  const theme = useTheme();
   const { currentStop } = useOperations();
   const [incidentCategory, setIncidentCategory] =
     useState<(typeof INCIDENT_CATEGORIES)[number]>("TRAFFIC_JAM");
@@ -260,7 +264,7 @@ function IncidentReportScreen({ subtitle }: { subtitle: string }) {
           numberOfLines={4}
           maxLength={500}
           placeholder="Mô tả nhanh tình huống (tối đa 500 ký tự)."
-          placeholderTextColor="#6D7A83"
+          placeholderTextColor={theme.placeholder}
           style={styles.input}
           value={incidentDescription}
           onChangeText={setIncidentDescription}
@@ -312,6 +316,7 @@ function IncidentReportScreen({ subtitle }: { subtitle: string }) {
 type ScanResult = { kind: "success" | "empty"; text: string };
 
 export function AssistantBoardingScreen() {
+  const styles = useThemedStyles(makeStyles);
   const {
     acknowledgeDepartureWarning,
     boardingMetrics,
@@ -537,6 +542,7 @@ export function AssistantBoardingScreen() {
 }
 
 export function AssistantCargoScreen() {
+  const styles = useThemedStyles(makeStyles);
   const {
     advanceParcelStatus,
     cargoMetrics,
@@ -619,6 +625,8 @@ function ParcelCard({
   onWeigh: (parcelId: string, actualWeightKg: number) => void;
   parcel: ReturnType<typeof useOperations>["parcels"][number];
 }) {
+  const styles = useThemedStyles(makeStyles);
+  const theme = useTheme();
   const [weightDraft, setWeightDraft] = useState("");
   const [receiveScanned, setReceiveScanned] = useState(false);
   const [deliveryScanned, setDeliveryScanned] = useState(false);
@@ -642,13 +650,13 @@ function ParcelCard({
 
       <View style={styles.metaStack}>
         <View style={styles.metaRow}>
-          <MaterialIcons name="place" size={15} color="#94A3AE" />
+          <MaterialIcons name="place" size={15} color={theme.textSecondary} />
           <Text style={styles.metaText}>
             {parcel.pickupStopName} → {parcel.dropoffStopName}
           </Text>
         </View>
         <View style={styles.metaRow}>
-          <MaterialIcons name="scale" size={15} color="#94A3AE" />
+          <MaterialIcons name="scale" size={15} color={theme.textSecondary} />
           <Text style={styles.metaText}>
             {parcel.estimatedWeightKg}kg
             {parcel.actualWeightKg != null
@@ -677,7 +685,7 @@ function ParcelCard({
             editable={receiveScanned}
             keyboardType="decimal-pad"
             placeholder={`kg thực tế (ước lượng ${parcel.estimatedWeightKg}kg)`}
-            placeholderTextColor="#6D7A83"
+            placeholderTextColor={theme.placeholder}
             style={styles.weighInput}
             value={weightDraft}
             onChangeText={setWeightDraft}
@@ -760,6 +768,7 @@ function ParcelCard({
 }
 
 export function AssistantStopsScreen() {
+  const styles = useThemedStyles(makeStyles);
   const {
     cargoMetrics,
     currentStop,
@@ -857,6 +866,8 @@ export function AssistantStopsScreen() {
 }
 
 export function CrewSupportScreen() {
+  const styles = useThemedStyles(makeStyles);
+  const theme = useTheme();
   const { role } = useOperations();
   const [draft, setDraft] = useState("");
   const roleLabel = role === "ASSISTANT" ? "phụ xe" : "tài xế";
@@ -936,7 +947,7 @@ export function CrewSupportScreen() {
                       : "person"
                   }
                   size={13}
-                  color="#94A3AE"
+                  color={theme.textSecondary}
                 />
                 <Text style={styles.messageSpeaker}>
                   {message.speaker === "assistant" ? "Trợ lý" : "Bạn"}
@@ -952,7 +963,7 @@ export function CrewSupportScreen() {
             value={draft}
             onChangeText={setDraft}
             placeholder="Nhập câu hỏi của bạn…"
-            placeholderTextColor="#6D7A83"
+            placeholderTextColor={theme.placeholder}
             style={styles.composerInput}
             onSubmitEditing={() => sendMessage(draft)}
             returnKeyType="send"
@@ -997,6 +1008,8 @@ const NOTIFICATION_COLOR: Record<Tone, string> = {
 
 // Chuông thông báo gắn góc phải header; bấm mở khay thông báo dạng popup.
 export function NotificationBell() {
+  const styles = useThemedStyles(makeStyles);
+  const theme = useTheme();
   const { notifications } = useOperations();
   const [open, setOpen] = useState(false);
   const count = notifications.length;
@@ -1010,7 +1023,7 @@ export function NotificationBell() {
         onPress={() => setOpen(true)}
         style={styles.bellButton}
       >
-        <MaterialIcons name="notifications" size={22} color="#F4F7F8" />
+        <MaterialIcons name="notifications" size={22} color={theme.text} />
         {count > 0 ? (
           <View style={styles.bellBadge}>
             <Text style={styles.bellBadgeText}>{count}</Text>
@@ -1033,7 +1046,7 @@ export function NotificationBell() {
                 hitSlop={8}
                 onPress={() => setOpen(false)}
               >
-                <MaterialIcons name="close" size={20} color="#94A3AE" />
+                <MaterialIcons name="close" size={20} color={theme.textSecondary} />
               </Pressable>
             </View>
 
@@ -1114,6 +1127,8 @@ function WorkScheduleSection({
   onOpenActive: () => void;
   schedule: ScheduleEntry[];
 }) {
+  const styles = useThemedStyles(makeStyles);
+  const theme = useTheme();
   const today = useMemo(() => new Date(), []);
   const todayISO = isoOf(today);
   const [mode, setMode] = useState<"week" | "month">("week");
@@ -1182,7 +1197,7 @@ function WorkScheduleSection({
             onPress={goPrev}
             style={styles.calNavBtn}
           >
-            <MaterialIcons name="chevron-left" size={22} color="#F4F7F8" />
+            <MaterialIcons name="chevron-left" size={22} color={theme.text} />
           </Pressable>
           <Text style={styles.calMonthLabel}>
             Tháng {anchor.getMonth() + 1}, {anchor.getFullYear()}
@@ -1193,7 +1208,7 @@ function WorkScheduleSection({
             onPress={goNext}
             style={styles.calNavBtn}
           >
-            <MaterialIcons name="chevron-right" size={22} color="#F4F7F8" />
+            <MaterialIcons name="chevron-right" size={22} color={theme.text} />
           </Pressable>
         </View>
 
@@ -1341,14 +1356,14 @@ function WorkScheduleSection({
                   <StatusChip label={entry.statusLabel} tone={entry.tone} />
                 </View>
                 <View style={styles.metaRow}>
-                  <MaterialIcons name="schedule" size={15} color="#94A3AE" />
+                  <MaterialIcons name="schedule" size={15} color={theme.textSecondary} />
                   <Text style={styles.metaText}>{entry.window}</Text>
                 </View>
                 <View style={styles.metaRow}>
                   <MaterialIcons
                     name="directions-bus"
                     size={15}
-                    color="#94A3AE"
+                    color={theme.textSecondary}
                   />
                   <Text style={styles.metaText}>{entry.vehicleLabel}</Text>
                 </View>
@@ -1374,6 +1389,7 @@ function RouteStopsCard({
 }: {
   routeStops: ReturnType<typeof useOperations>["routeStops"];
 }) {
+  const styles = useThemedStyles(makeStyles);
   return (
     <SurfaceCard delay={120}>
       <SectionTitle icon="route" title="Tiến trình tuyến" />
@@ -1418,7 +1434,8 @@ function RouteStopsCard({
   );
 }
 
-const styles = StyleSheet.create({
+const makeStyles = (c: Palette) =>
+  StyleSheet.create({
   heroTopRow: {
     flexDirection: "row",
     justifyContent: "space-between",
@@ -1438,13 +1455,13 @@ const styles = StyleSheet.create({
     gap: 2,
   },
   routeEndpointLabel: {
-    color: "#94A3AE",
+    color: c.textSecondary,
     fontSize: 12,
     textTransform: "uppercase",
     letterSpacing: 0.6,
   },
   routeEndpointName: {
-    color: "#F4F7F8",
+    color: c.text,
     fontFamily: Fonts.rounded,
     fontSize: 16,
     lineHeight: 21,
@@ -1472,7 +1489,7 @@ const styles = StyleSheet.create({
     backgroundColor: "rgba(148, 163, 174, 0.08)",
   },
   calMonthLabel: {
-    color: "#F4F7F8",
+    color: c.text,
     fontFamily: Fonts.rounded,
     fontSize: 18,
     fontWeight: 700,
@@ -1494,7 +1511,7 @@ const styles = StyleSheet.create({
     backgroundColor: "#02C39A",
   },
   segmentText: {
-    color: "#B6C1C8",
+    color: c.textMeta,
     fontSize: 14,
     fontWeight: 700,
   },
@@ -1516,12 +1533,12 @@ const styles = StyleSheet.create({
     backgroundColor: "#02C39A",
   },
   dayWeekday: {
-    color: "#94A3AE",
+    color: c.textSecondary,
     fontSize: 12,
     fontWeight: 700,
   },
   dayNumber: {
-    color: "#F4F7F8",
+    color: c.text,
     fontFamily: Fonts.rounded,
     fontSize: 16,
     fontWeight: 700,
@@ -1555,7 +1572,7 @@ const styles = StyleSheet.create({
   monthHeaderText: {
     flex: 1,
     textAlign: "center",
-    color: "#94A3AE",
+    color: c.textSecondary,
     fontSize: 12,
     fontWeight: 700,
   },
@@ -1580,7 +1597,7 @@ const styles = StyleSheet.create({
     borderColor: "rgba(2, 195, 154, 0.6)",
   },
   monthDayText: {
-    color: "#F4F7F8",
+    color: c.text,
     fontSize: 14,
     fontWeight: 600,
   },
@@ -1591,7 +1608,7 @@ const styles = StyleSheet.create({
     gap: Spacing.two,
   },
   scheduleDayTitle: {
-    color: "#F4F7F8",
+    color: c.text,
     fontFamily: Fonts.rounded,
     fontSize: 18,
     fontWeight: 700,
@@ -1599,9 +1616,9 @@ const styles = StyleSheet.create({
   scheduleEntry: {
     borderRadius: 18,
     padding: Spacing.three,
-    backgroundColor: "#151B20",
+    backgroundColor: c.surface,
     borderWidth: 1,
-    borderColor: "#2C3942",
+    borderColor: c.border,
     gap: 8,
   },
   scheduleEntryHead: {
@@ -1612,7 +1629,7 @@ const styles = StyleSheet.create({
   },
   scheduleRoute: {
     flex: 1,
-    color: "#F4F7F8",
+    color: c.text,
     fontFamily: Fonts.rounded,
     fontSize: 16,
     fontWeight: 700,
@@ -1632,9 +1649,9 @@ const styles = StyleSheet.create({
     width: 12,
     height: 12,
     borderRadius: 999,
-    backgroundColor: "#2C3942",
+    backgroundColor: c.border,
     borderWidth: 2,
-    borderColor: "#94A3AE",
+    borderColor: c.textSecondary,
     marginTop: 5,
   },
   stopMarkerCompleted: {
@@ -1672,21 +1689,21 @@ const styles = StyleSheet.create({
     gap: 2,
   },
   stopTitle: {
-    color: "#F4F7F8",
+    color: c.text,
     fontFamily: Fonts.rounded,
     fontSize: 17,
     fontWeight: 700,
   },
   stopSubtitle: {
-    color: "#94A3AE",
+    color: c.textSecondary,
     fontSize: 13,
   },
   stopMeta: {
-    color: "#D3DBDF",
+    color: c.textGhost,
     fontSize: 14,
   },
   stopNote: {
-    color: "#94A3AE",
+    color: c.textSecondary,
     fontSize: 13,
   },
   categoryWrap: {
@@ -1698,11 +1715,11 @@ const styles = StyleSheet.create({
     minHeight: 116,
     borderRadius: 20,
     borderWidth: 1,
-    borderColor: "#2C3942",
-    backgroundColor: "#151B20",
+    borderColor: c.border,
+    backgroundColor: c.surface,
     paddingHorizontal: Spacing.three,
     paddingVertical: Spacing.three,
-    color: "#F4F7F8",
+    color: c.text,
     textAlignVertical: "top",
     fontSize: 15,
     lineHeight: 22,
@@ -1716,7 +1733,7 @@ const styles = StyleSheet.create({
     gap: Spacing.two,
   },
   feedbackText: {
-    color: "#F4F7F8",
+    color: c.text,
     fontSize: 14,
     lineHeight: 21,
   },
@@ -1755,7 +1772,7 @@ const styles = StyleSheet.create({
     fontSize: 13,
   },
   passengerName: {
-    color: "#F4F7F8",
+    color: c.text,
     fontFamily: Fonts.rounded,
     fontSize: 18,
     fontWeight: 700,
@@ -1778,8 +1795,8 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: "#151B20",
-    borderColor: "#2C3942",
+    backgroundColor: c.surface,
+    borderColor: c.border,
   },
   // Lối đi rộng bằng 1 ô ghế để mọi cột thẳng hàng (kể cả băng ghế cuối).
   seatAisle: {
@@ -1806,7 +1823,7 @@ const styles = StyleSheet.create({
     borderWidth: 2,
   },
   seatLabel: {
-    color: "#F4F7F8",
+    color: c.text,
     fontFamily: Fonts.mono,
     fontSize: 13,
     fontWeight: 700,
@@ -1828,7 +1845,7 @@ const styles = StyleSheet.create({
     borderWidth: 1,
   },
   legendText: {
-    color: "#B6C1C8",
+    color: c.textMeta,
     fontSize: 13,
   },
   pendingRow: {
@@ -1838,21 +1855,21 @@ const styles = StyleSheet.create({
     gap: Spacing.three,
     borderRadius: 18,
     padding: Spacing.three,
-    backgroundColor: "#151B20",
+    backgroundColor: c.surface,
     borderWidth: 1,
-    borderColor: "#2C3942",
+    borderColor: c.border,
   },
   metaText: {
-    color: "#B6C1C8",
+    color: c.textMeta,
     fontSize: 14,
     lineHeight: 20,
   },
   parcelCard: {
     borderRadius: 22,
     padding: Spacing.three,
-    backgroundColor: "#151B20",
+    backgroundColor: c.surface,
     borderWidth: 1,
-    borderColor: "#2C3942",
+    borderColor: c.border,
     gap: Spacing.two,
   },
   parcelHeader: {
@@ -1871,7 +1888,7 @@ const styles = StyleSheet.create({
     fontSize: 13,
   },
   parcelPeople: {
-    color: "#F4F7F8",
+    color: c.text,
     fontFamily: Fonts.rounded,
     fontSize: 17,
     fontWeight: 700,
@@ -1891,10 +1908,10 @@ const styles = StyleSheet.create({
     minHeight: 48,
     borderRadius: 16,
     borderWidth: 1,
-    borderColor: "#2C3942",
-    backgroundColor: "#0F1418",
+    borderColor: c.border,
+    backgroundColor: c.surfaceDeep,
     paddingHorizontal: Spacing.three,
-    color: "#F4F7F8",
+    color: c.text,
     fontSize: 15,
   },
   parcelActionStack: {
@@ -1906,7 +1923,7 @@ const styles = StyleSheet.create({
     lineHeight: 18,
   },
   fieldLabel: {
-    color: "#94A3AE",
+    color: c.textSecondary,
     fontSize: 12,
     textTransform: "uppercase",
     letterSpacing: 0.6,
@@ -1934,11 +1951,11 @@ const styles = StyleSheet.create({
     minHeight: 52,
     borderRadius: 18,
     borderWidth: 1,
-    borderColor: "#2C3942",
-    backgroundColor: "#151B20",
+    borderColor: c.border,
+    backgroundColor: c.surface,
     paddingHorizontal: Spacing.three,
     paddingVertical: Spacing.two,
-    color: "#F4F7F8",
+    color: c.text,
     fontSize: 15,
   },
   sendButton: {
@@ -1957,23 +1974,23 @@ const styles = StyleSheet.create({
   },
   assistantBubble: {
     alignSelf: "flex-start",
-    backgroundColor: "#151B20",
+    backgroundColor: c.surface,
     borderWidth: 1,
-    borderColor: "#2C3942",
+    borderColor: c.border,
   },
   userBubble: {
     alignSelf: "flex-end",
-    backgroundColor: "#113F3A",
+    backgroundColor: c.tones.primary.background,
     borderWidth: 1,
-    borderColor: "rgba(2, 195, 154, 0.25)",
+    borderColor: c.tones.primary.border,
   },
   messageSpeaker: {
-    color: "#94A3AE",
+    color: c.textSecondary,
     fontFamily: Fonts.mono,
     fontSize: 12,
   },
   messageText: {
-    color: "#F4F7F8",
+    color: c.text,
     fontSize: 15,
     lineHeight: 22,
   },
@@ -1985,7 +2002,7 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     backgroundColor: "rgba(148, 163, 174, 0.1)",
     borderWidth: 1,
-    borderColor: "#2C3942",
+    borderColor: c.border,
   },
   bellBadge: {
     position: "absolute",
@@ -1999,7 +2016,7 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     backgroundColor: "#FF5252",
     borderWidth: 2,
-    borderColor: "#12161A",
+    borderColor: c.background,
   },
   bellBadgeText: {
     color: "#FFFFFF",
@@ -2017,9 +2034,9 @@ const styles = StyleSheet.create({
     width: "100%",
     maxWidth: 360,
     borderRadius: 22,
-    backgroundColor: "#1A2127",
+    backgroundColor: c.panel,
     borderWidth: 1,
-    borderColor: "#2C3942",
+    borderColor: c.border,
     padding: Spacing.three,
     gap: Spacing.three,
   },
@@ -2029,7 +2046,7 @@ const styles = StyleSheet.create({
     justifyContent: "space-between",
   },
   notifPanelTitle: {
-    color: "#F4F7F8",
+    color: c.text,
     fontFamily: Fonts.rounded,
     fontSize: 18,
     fontWeight: 700,
@@ -2051,14 +2068,14 @@ const styles = StyleSheet.create({
     gap: 3,
   },
   notifItemTitle: {
-    color: "#F4F7F8",
+    color: c.text,
     fontFamily: Fonts.rounded,
     fontSize: 15,
     lineHeight: 20,
     fontWeight: 700,
   },
   notifItemText: {
-    color: "#94A3AE",
+    color: c.textSecondary,
     fontSize: 13,
     lineHeight: 19,
   },

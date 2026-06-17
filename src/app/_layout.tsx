@@ -1,5 +1,5 @@
 import { DarkTheme, DefaultTheme, Slot, ThemeProvider } from "expo-router";
-import { useColorScheme } from "react-native";
+import { type PropsWithChildren } from "react";
 import {
     SafeAreaProvider,
     initialWindowMetrics,
@@ -11,33 +11,44 @@ import {
     SessionProvider,
     useSession,
 } from "@/features/session/session-context";
+import { ThemeModeProvider, useThemeMode } from "@/features/theme/theme-mode";
 
 export default function TabLayout() {
-  const colorScheme = useColorScheme();
-  const theme = colorScheme === "dark" ? DarkTheme : DefaultTheme;
-  const palette = Colors[colorScheme === "unspecified" ? "dark" : colorScheme];
-
   return (
     <SafeAreaProvider initialMetrics={initialWindowMetrics}>
-      <ThemeProvider
-        value={{
-          ...theme,
-          colors: {
-            ...theme.colors,
-            background: palette.background,
-            border: palette.border,
-            card: palette.backgroundElement,
-            notification: palette.danger,
-            primary: palette.primary,
-            text: palette.text,
-          },
-        }}
-      >
-        <SessionProvider>
-          <AppSessionGate />
-        </SessionProvider>
-      </ThemeProvider>
+      <ThemeModeProvider>
+        <ThemedNavigation>
+          <SessionProvider>
+            <AppSessionGate />
+          </SessionProvider>
+        </ThemedNavigation>
+      </ThemeModeProvider>
     </SafeAreaProvider>
+  );
+}
+
+function ThemedNavigation({ children }: PropsWithChildren) {
+  const { mode } = useThemeMode();
+  const theme = mode === "dark" ? DarkTheme : DefaultTheme;
+  const palette = Colors[mode];
+
+  return (
+    <ThemeProvider
+      value={{
+        ...theme,
+        colors: {
+          ...theme.colors,
+          background: palette.background,
+          border: palette.border,
+          card: palette.backgroundElement,
+          notification: palette.danger,
+          primary: palette.primary,
+          text: palette.text,
+        },
+      }}
+    >
+      {children}
+    </ThemeProvider>
   );
 }
 

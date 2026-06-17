@@ -1,7 +1,6 @@
 import { NativeTabs } from "expo-router/unstable-native-tabs";
-import { useColorScheme } from "react-native";
 
-import { Colors } from "@/constants/theme";
+import { useTheme } from "@/hooks/use-theme";
 
 type TabVariant = "driver" | "assistant";
 
@@ -70,8 +69,7 @@ type AppTabsProps = {
 };
 
 export default function AppTabs({ variant }: AppTabsProps) {
-  const scheme = useColorScheme();
-  const colors = Colors[scheme === "unspecified" ? "light" : scheme];
+  const colors = useTheme();
   const tabs = TAB_CONFIG[variant];
 
   return (

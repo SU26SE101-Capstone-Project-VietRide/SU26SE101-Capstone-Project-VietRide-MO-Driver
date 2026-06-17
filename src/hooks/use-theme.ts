@@ -1,14 +1,23 @@
 /**
- * Learn more about light and dark modes:
- * https://docs.expo.dev/guides/color-schemes/
+ * Trả về bảng màu (palette) theo chế độ sáng/tối mà người dùng đã chọn.
+ * Chế độ được quản lý bởi ThemeModeProvider (features/theme/theme-mode).
  */
 
-import { Colors } from '@/constants/theme';
-import { useColorScheme } from '@/hooks/use-color-scheme';
+import { useMemo } from "react";
 
-export function useTheme() {
-  const scheme = useColorScheme();
-  const theme = scheme === 'unspecified' ? 'light' : scheme;
+import { Colors, type Palette } from "@/constants/theme";
+import { useThemeMode } from "@/features/theme/theme-mode";
 
-  return Colors[theme];
+export function useTheme(): Palette {
+  const { mode } = useThemeMode();
+  return Colors[mode];
+}
+
+/**
+ * Tạo StyleSheet phụ thuộc theme. `factory` phải là hằng ở cấp module để
+ * memo hoá theo palette hoạt động đúng.
+ */
+export function useThemedStyles<T>(factory: (colors: Palette) => T): T {
+  const theme = useTheme();
+  return useMemo(() => factory(theme), [factory, theme]);
 }
