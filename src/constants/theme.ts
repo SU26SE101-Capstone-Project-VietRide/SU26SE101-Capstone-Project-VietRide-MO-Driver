@@ -55,15 +55,16 @@ const DarkTones = {
 } as const;
 
 const LightTones = {
+  // Light theme bám theo Figma App User: teal #2AC1BC / deep teal #006A67.
   primary: {
-    background: "rgba(2, 195, 154, 0.16)",
-    border: "rgba(2, 195, 154, 0.40)",
-    text: "#08846C",
+    background: "rgba(42, 193, 188, 0.16)",
+    border: "rgba(42, 193, 188, 0.42)",
+    text: "#006A67",
   },
   neutral: {
-    background: "rgba(100, 116, 128, 0.12)",
-    border: "rgba(100, 116, 128, 0.28)",
-    text: "#51606A",
+    background: "#EBEEF3",
+    border: "rgba(60, 73, 72, 0.18)",
+    text: "#3C4948",
   },
   success: {
     background: "rgba(0, 176, 90, 0.16)",
@@ -93,6 +94,8 @@ export const Colors = {
     background: "#12161A",
     backgroundElement: "#1E252B",
     backgroundSelected: "#253039",
+    // Nền cho card "accent" (card chính): dark nâng sáng nhẹ, light dùng trắng.
+    backgroundAccent: "#253039",
     surface: "#151B20",
     surfaceDeep: "#0F1418",
     panel: "#1A2127",
@@ -108,19 +111,27 @@ export const Colors = {
   },
   light: {
     ...Brand,
-    background: "#EEF1F4",
+    // Override màu thương hiệu cho riêng light theme theo bảng màu Figma App User.
+    primary: "#2AC1BC",
+    primaryMuted: "#CFEDEB",
+    // Nền xám trung tính rõ để card trắng + surface mint nổi hẳn, không bị
+    // "trùng" với nền (tránh hiện tượng lẫn màu khi nền cũng tông mint).
+    background: "#DFE5E8",
     backgroundElement: "#FFFFFF",
-    backgroundSelected: "#E4EBEF",
+    backgroundSelected: "#C9E8E2",
+    // Card "accent" ở light dùng nền trắng (như bento card Figma) thay vì tô mint
+    // dễ trùng nền; phân tách nhờ nền xám phía sau + viền.
+    backgroundAccent: "#FFFFFF",
     surface: "#FFFFFF",
-    surfaceDeep: "#EDF1F3",
+    surfaceDeep: "#D6DDDF",
     panel: "#FFFFFF",
     overlay: "#FFFFFF",
-    border: "#D6DDE2",
-    text: "#11181D",
-    textSecondary: "#5E6C75",
-    textMeta: "#46535B",
-    textGhost: "#46535B",
-    placeholder: "#97A2A9",
+    border: "#D2DADD",
+    text: "#181C20",
+    textSecondary: "#3C4948",
+    textMeta: "#3C4948",
+    textGhost: "#3C4948",
+    placeholder: "#9AA6A4",
     scrim: "rgba(0, 0, 0, 0.35)",
     tones: LightTones,
   },

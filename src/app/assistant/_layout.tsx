@@ -1,6 +1,5 @@
 import { Redirect, Stack } from "expo-router";
 
-import { Colors } from "@/constants/theme";
 import {
     getHomeHrefForRole,
     useSession,
@@ -20,17 +19,9 @@ export default function AssistantLayout() {
   return (
     <Stack screenOptions={{ headerShown: false }}>
       <Stack.Screen name="(tabs)" />
-      <Stack.Screen
-        name="incident"
-        options={{
-          headerShown: true,
-          headerTitle: "",
-          headerBackTitle: "Quay lại",
-          headerTintColor: Colors.dark.text,
-          headerStyle: { backgroundColor: Colors.dark.background },
-          headerShadowVisible: false,
-        }}
-      />
+      {/* Màn Báo sự cố tự dựng nút back trong OperationsScreen (giống notifications),
+          nên tắt native header để tránh chồng khoảng đệm safe-area gây dải trống. */}
+      <Stack.Screen name="incident" />
     </Stack>
   );
 }

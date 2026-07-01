@@ -1,4 +1,4 @@
-import { DarkTheme, DefaultTheme, Slot, ThemeProvider } from "expo-router";
+import { DarkTheme, DefaultTheme, Slot, Stack, ThemeProvider } from "expo-router";
 import { type PropsWithChildren } from "react";
 import {
     SafeAreaProvider,
@@ -61,7 +61,10 @@ function AppSessionGate() {
 
   return (
     <OperationsProvider key={session.crewId}>
-      <Slot />
+      <Stack screenOptions={{ headerShown: false }}>
+        {/* Màn Thông báo dùng chung cho cả Driver và Assistant, dựng header riêng. */}
+        <Stack.Screen name="notifications" />
+      </Stack>
     </OperationsProvider>
   );
 }

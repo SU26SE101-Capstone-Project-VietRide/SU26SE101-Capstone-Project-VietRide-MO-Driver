@@ -438,27 +438,58 @@ export const parcelsSeed = [
   },
 ];
 
-export const notificationsSeed = [
+export type NotificationSeed = {
+  id: string;
+  title: string;
+  body: string;
+  // Nhãn loại thông báo — dùng luôn làm tiêu chí lọc trên màn Thông báo.
+  badge: string;
+  // Tông màu icon/nhãn theo trạng thái.
+  tone: Tone;
+  // Thời điểm dạng tương đối, hiển thị cạnh tiêu đề.
+  time: string;
+};
+
+export const notificationsSeed: NotificationSeed[] = [
   {
     id: "n-01",
     title: "Điều hành cập nhật giờ đến Trạm dừng Madagui",
     body: "Chuyến đang chậm 18 phút. Tổ xe giữ định vị liên tục, phụ xe ưu tiên đón khách nhanh tại Dầu Giây.",
     badge: "Trễ giờ",
-    tone: "warning" as Tone,
+    tone: "warning",
+    time: "5 phút trước",
   },
   {
     id: "n-02",
     title: "Có 2 hành khách chưa xác nhận tại Dầu Giây",
     body: "Nếu rời điểm dừng, hệ thống sẽ đánh dấu khách có thể vắng mặt và ghi lại nhật ký.",
     badge: "Đón khách",
-    tone: "danger" as Tone,
+    tone: "danger",
+    time: "12 phút trước",
   },
   {
     id: "n-03",
     title: "Kiện PC-240601-04 đã dỡ, chờ xác nhận giao",
     body: "Phụ xe cần quét mã hoặc xác nhận để gửi email báo cho người nhận.",
     badge: "Kiện hàng",
-    tone: "info" as Tone,
+    tone: "info",
+    time: "28 phút trước",
+  },
+  {
+    id: "n-04",
+    title: "Lịch chạy ngày mai đã được phân công",
+    body: "Tuyến TP.HCM → Đà Lạt, khởi hành 06:30. Vui lòng kiểm tra xe và xác nhận trước 21:00 hôm nay.",
+    badge: "Lịch chạy",
+    tone: "primary",
+    time: "1 giờ trước",
+  },
+  {
+    id: "n-05",
+    title: "Đã thu đủ phụ phí cân lại kiện PC-240601-02",
+    body: "Khách đã thanh toán phần cân vượt. Kiện hàng sẵn sàng nhận lên xe.",
+    badge: "Kiện hàng",
+    tone: "success",
+    time: "2 giờ trước",
   },
 ];
 

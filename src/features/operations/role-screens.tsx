@@ -3,7 +3,6 @@ import { useRouter } from "expo-router";
 import { useMemo, useState, type ComponentProps } from "react";
 import {
     Linking,
-    Modal,
     Platform,
     Pressable,
     StyleSheet,
@@ -129,6 +128,7 @@ export function AssistantOverviewScreen() {
 
 export function DriverTripScreen() {
   const styles = useThemedStyles(makeStyles);
+  const theme = useTheme();
   const { currentStop, nextStop, pendingAtCurrentStopCount, routeStops, trip } =
     useOperations();
 
@@ -146,7 +146,7 @@ export function DriverTripScreen() {
               {routeStops[0].name}
             </Text>
           </View>
-          <MaterialIcons name="arrow-forward" size={22} color="#02C39A" />
+          <MaterialIcons name="arrow-forward" size={22} color={theme.primary} />
           <View style={styles.routeEndpoint}>
             <Text style={styles.routeEndpointLabel}>Điểm đến</Text>
             <Text style={styles.routeEndpointName} numberOfLines={2}>
@@ -211,12 +211,23 @@ export function DriverIncidentScreen() {
 }
 
 export function AssistantIncidentScreen() {
+  const router = useRouter();
+
   return (
-    <IncidentReportScreen subtitle="Gửi sự cố, tai nạn về điều hành kèm vị trí và mô tả." />
+    <IncidentReportScreen
+      subtitle="Gửi sự cố, tai nạn về điều hành kèm vị trí và mô tả."
+      onBack={() => router.back()}
+    />
   );
 }
 
-function IncidentReportScreen({ subtitle }: { subtitle: string }) {
+function IncidentReportScreen({
+  onBack,
+  subtitle,
+}: {
+  onBack?: () => void;
+  subtitle: string;
+}) {
   const styles = useThemedStyles(makeStyles);
   const theme = useTheme();
   const { currentStop } = useOperations();
@@ -230,6 +241,7 @@ function IncidentReportScreen({ subtitle }: { subtitle: string }) {
     <OperationsScreen
       title="Báo sự cố"
       subtitle={subtitle}
+      onBack={onBack}
       headerRight={<NotificationBell />}
     >
       <SurfaceCard accent delay={0}>
@@ -769,6 +781,7 @@ function ParcelCard({
 
 export function AssistantStopsScreen() {
   const styles = useThemedStyles(makeStyles);
+  const theme = useTheme();
   const {
     cargoMetrics,
     currentStop,
@@ -798,7 +811,7 @@ export function AssistantStopsScreen() {
               {routeStops[0].name}
             </Text>
           </View>
-          <MaterialIcons name="arrow-forward" size={22} color="#02C39A" />
+          <MaterialIcons name="arrow-forward" size={22} color={theme.primary} />
           <View style={styles.routeEndpoint}>
             <Text style={styles.routeEndpointLabel}>Điểm đến</Text>
             <Text style={styles.routeEndpointName} numberOfLines={2}>
@@ -979,7 +992,7 @@ export function CrewSupportScreen() {
               },
             ]}
           >
-            <MaterialIcons name="send" size={20} color="#081211" />
+            <MaterialIcons name="send" size={20} color={theme.onAccent} />
           </Pressable>
         </View>
       </SurfaceCard>
@@ -987,18 +1000,21 @@ export function CrewSupportScreen() {
   );
 }
 
-const NOTIFICATION_ICON: Record<Tone, ComponentProps<typeof MaterialIcons>["name"]> =
-  {
-    primary: "campaign",
-    neutral: "notifications",
-    success: "check-circle",
-    warning: "schedule",
-    danger: "error",
-    info: "local-shipping",
-  };
+// Icon/màu cho từng tông thông báo — dùng chung cho chuông và màn Thông báo.
+export const NOTIFICATION_ICON: Record<
+  Tone,
+  ComponentProps<typeof MaterialIcons>["name"]
+> = {
+  primary: "campaign",
+  neutral: "notifications",
+  success: "check-circle",
+  warning: "schedule",
+  danger: "error",
+  info: "local-shipping",
+};
 
-const NOTIFICATION_COLOR: Record<Tone, string> = {
-  primary: "#02C39A",
+export const NOTIFICATION_COLOR: Record<Tone, string> = {
+  primary: "#2AC1BC",
   neutral: "#D3DBDF",
   success: "#00E676",
   warning: "#FFD600",
@@ -1006,76 +1022,29 @@ const NOTIFICATION_COLOR: Record<Tone, string> = {
   info: "#35C2FF",
 };
 
-// Chuông thông báo gắn góc phải header; bấm mở khay thông báo dạng popup.
+// Chuông thông báo gắn góc phải header; bấm mở màn Thông báo riêng.
+// Badge đếm số thông báo CHƯA đọc.
 export function NotificationBell() {
   const styles = useThemedStyles(makeStyles);
   const theme = useTheme();
-  const { notifications } = useOperations();
-  const [open, setOpen] = useState(false);
-  const count = notifications.length;
+  const router = useRouter();
+  const { unreadNotificationsCount } = useOperations();
 
   return (
-    <>
-      <Pressable
-        accessibilityRole="button"
-        accessibilityLabel="Thông báo điều hành"
-        hitSlop={8}
-        onPress={() => setOpen(true)}
-        style={styles.bellButton}
-      >
-        <MaterialIcons name="notifications" size={22} color={theme.text} />
-        {count > 0 ? (
-          <View style={styles.bellBadge}>
-            <Text style={styles.bellBadgeText}>{count}</Text>
-          </View>
-        ) : null}
-      </Pressable>
-
-      <Modal
-        visible={open}
-        transparent
-        animationType="fade"
-        onRequestClose={() => setOpen(false)}
-      >
-        <Pressable style={styles.notifOverlay} onPress={() => setOpen(false)}>
-          <Pressable style={styles.notifPanel} onPress={() => undefined}>
-            <View style={styles.notifPanelHeader}>
-              <Text style={styles.notifPanelTitle}>Thông báo điều hành</Text>
-              <Pressable
-                accessibilityRole="button"
-                hitSlop={8}
-                onPress={() => setOpen(false)}
-              >
-                <MaterialIcons name="close" size={20} color={theme.textSecondary} />
-              </Pressable>
-            </View>
-
-            {notifications.map((notification) => (
-              <View key={notification.id} style={styles.notifItem}>
-                <View
-                  style={[
-                    styles.notifItemIcon,
-                    {
-                      backgroundColor: `${NOTIFICATION_COLOR[notification.tone]}22`,
-                    },
-                  ]}
-                >
-                  <MaterialIcons
-                    name={NOTIFICATION_ICON[notification.tone]}
-                    size={18}
-                    color={NOTIFICATION_COLOR[notification.tone]}
-                  />
-                </View>
-                <View style={styles.notifItemBody}>
-                  <Text style={styles.notifItemTitle}>{notification.title}</Text>
-                  <Text style={styles.notifItemText}>{notification.body}</Text>
-                </View>
-              </View>
-            ))}
-          </Pressable>
-        </Pressable>
-      </Modal>
-    </>
+    <Pressable
+      accessibilityRole="button"
+      accessibilityLabel="Thông báo điều hành"
+      hitSlop={8}
+      onPress={() => router.push("/notifications")}
+      style={styles.bellButton}
+    >
+      <MaterialIcons name="notifications" size={22} color={theme.text} />
+      {unreadNotificationsCount > 0 ? (
+        <View style={styles.bellBadge}>
+          <Text style={styles.bellBadgeText}>{unreadNotificationsCount}</Text>
+        </View>
+      ) : null}
+    </Pressable>
   );
 }
 
@@ -1182,6 +1151,9 @@ function WorkScheduleSection({
     ...Array.from({ length: leadingBlanks }, () => null),
     ...Array.from({ length: daysInMonth }, (_, index) => index + 1),
   ];
+  // Chèn ô trống ở cuối cho đủ bội số của 7 để tuần cuối không bị kéo giãn lệch cột.
+  const trailingBlanks = (7 - (monthCells.length % 7)) % 7;
+  monthCells.push(...Array.from({ length: trailingBlanks }, () => null));
   const monthWeeks = chunk(monthCells, 7);
 
   const selectedDate = dateOf(selectedISO);
@@ -1508,7 +1480,7 @@ const makeStyles = (c: Palette) =>
     alignItems: "center",
   },
   segmentItemActive: {
-    backgroundColor: "#02C39A",
+    backgroundColor: c.primary,
   },
   segmentText: {
     color: c.textMeta,
@@ -1516,7 +1488,7 @@ const makeStyles = (c: Palette) =>
     fontWeight: 700,
   },
   segmentTextActive: {
-    color: "#081211",
+    color: c.onAccent,
   },
   weekRow: {
     flexDirection: "row",
@@ -1530,7 +1502,7 @@ const makeStyles = (c: Palette) =>
     borderRadius: 14,
   },
   dayCellSelected: {
-    backgroundColor: "#02C39A",
+    backgroundColor: c.primary,
   },
   dayWeekday: {
     color: c.textSecondary,
@@ -1544,10 +1516,10 @@ const makeStyles = (c: Palette) =>
     fontWeight: 700,
   },
   dayNumberToday: {
-    color: "#02C39A",
+    color: c.primary,
   },
   dayTextSelected: {
-    color: "#081211",
+    color: c.onAccent,
   },
   dayDot: {
     width: 5,
@@ -1555,10 +1527,10 @@ const makeStyles = (c: Palette) =>
     borderRadius: 999,
   },
   dayDotActive: {
-    backgroundColor: "#02C39A",
+    backgroundColor: c.primary,
   },
   dayDotOnSelected: {
-    backgroundColor: "#081211",
+    backgroundColor: c.onAccent,
   },
   dayDotHidden: {
     backgroundColor: "transparent",
@@ -1767,7 +1739,7 @@ const makeStyles = (c: Palette) =>
     gap: 4,
   },
   bookingCode: {
-    color: "#02C39A",
+    color: c.primary,
     fontFamily: Fonts.mono,
     fontSize: 13,
   },
@@ -1819,7 +1791,7 @@ const makeStyles = (c: Palette) =>
     borderWidth: 2,
   },
   seatSelected: {
-    borderColor: "#02C39A",
+    borderColor: c.primary,
     borderWidth: 2,
   },
   seatLabel: {
@@ -1883,7 +1855,7 @@ const makeStyles = (c: Palette) =>
     gap: 4,
   },
   parcelCode: {
-    color: "#02C39A",
+    color: c.primary,
     fontFamily: Fonts.mono,
     fontSize: 13,
   },
@@ -1964,7 +1936,7 @@ const makeStyles = (c: Palette) =>
     borderRadius: 18,
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: "#02C39A",
+    backgroundColor: c.primary,
   },
   messageBubble: {
     borderRadius: 22,
@@ -1974,7 +1946,7 @@ const makeStyles = (c: Palette) =>
   },
   assistantBubble: {
     alignSelf: "flex-start",
-    backgroundColor: c.surface,
+    backgroundColor: c.surfaceDeep,
     borderWidth: 1,
     borderColor: c.border,
   },
@@ -2022,61 +1994,5 @@ const makeStyles = (c: Palette) =>
     color: "#FFFFFF",
     fontSize: 10,
     fontWeight: 700,
-  },
-  notifOverlay: {
-    flex: 1,
-    backgroundColor: "rgba(0, 0, 0, 0.5)",
-    paddingTop: 96,
-    paddingHorizontal: 16,
-    alignItems: "flex-end",
-  },
-  notifPanel: {
-    width: "100%",
-    maxWidth: 360,
-    borderRadius: 22,
-    backgroundColor: c.panel,
-    borderWidth: 1,
-    borderColor: c.border,
-    padding: Spacing.three,
-    gap: Spacing.three,
-  },
-  notifPanelHeader: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-  },
-  notifPanelTitle: {
-    color: c.text,
-    fontFamily: Fonts.rounded,
-    fontSize: 18,
-    fontWeight: 700,
-  },
-  notifItem: {
-    flexDirection: "row",
-    alignItems: "flex-start",
-    gap: Spacing.two,
-  },
-  notifItemIcon: {
-    width: 38,
-    height: 38,
-    borderRadius: 12,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  notifItemBody: {
-    flex: 1,
-    gap: 3,
-  },
-  notifItemTitle: {
-    color: c.text,
-    fontFamily: Fonts.rounded,
-    fontSize: 15,
-    lineHeight: 20,
-    fontWeight: 700,
-  },
-  notifItemText: {
-    color: c.textSecondary,
-    fontSize: 13,
-    lineHeight: 19,
   },
 });

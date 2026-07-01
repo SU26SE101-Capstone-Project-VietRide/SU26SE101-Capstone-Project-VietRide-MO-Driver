@@ -24,10 +24,12 @@ type MaterialIconName = ComponentProps<typeof MaterialIcons>["name"];
 export function OperationsScreen({
   children,
   headerRight,
+  onBack,
   subtitle,
   title,
 }: PropsWithChildren<{
   headerRight?: ReactNode;
+  onBack?: () => void;
   subtitle: string;
   title: string;
 }>) {
@@ -51,6 +53,17 @@ export function OperationsScreen({
         ]}
       >
         <View style={styles.pageHeader}>
+          {onBack ? (
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel="Quay lại"
+              hitSlop={8}
+              onPress={onBack}
+              style={styles.backButton}
+            >
+              <MaterialIcons name="arrow-back" size={22} color={theme.text} />
+            </Pressable>
+          ) : null}
           <View style={styles.pageHeaderTop}>
             <View style={styles.pageHeaderTitles}>
               <Text style={styles.pageEyebrow}>VietRide Operations</Text>
@@ -82,7 +95,7 @@ export function SurfaceCard({
         styles.card,
         {
           backgroundColor: accent
-            ? theme.backgroundSelected
+            ? theme.backgroundAccent
             : theme.backgroundElement,
           borderColor: theme.border,
         },
@@ -330,6 +343,17 @@ const makeStyles = (c: Palette) =>
     },
     pageHeader: {
       gap: Spacing.one,
+      marginBottom: Spacing.one,
+    },
+    backButton: {
+      width: 44,
+      height: 44,
+      borderRadius: 14,
+      alignItems: "center",
+      justifyContent: "center",
+      backgroundColor: c.tones.neutral.background,
+      borderWidth: 1,
+      borderColor: c.border,
       marginBottom: Spacing.one,
     },
     pageHeaderTop: {

@@ -15,10 +15,16 @@ import {
     routeStopsSeed,
     supportQuickPromptsSeed,
     tripSeed,
+    type NotificationSeed,
     type ParcelStatus,
     type ScheduleEntry,
     type Tone,
 } from "./mock-data";
+
+// Thông báo kèm trạng thái đã đọc/chưa đọc do người dùng tương tác.
+export type NotificationVM = NotificationSeed & {
+  read: boolean;
+};
 
 type PassengerVM = {
   id: string;
@@ -79,9 +85,11 @@ type OperationsContextValue = {
   currentStop: (typeof routeStopsSeed)[number];
   currentStopArrived: boolean;
   departureWarningAcknowledged: boolean;
+  markAllNotificationsRead: () => void;
   markCurrentStopArrived: () => void;
+  markNotificationRead: (notificationId: string) => void;
   nextStop: (typeof routeStopsSeed)[number];
-  notifications: typeof notificationsSeed;
+  notifications: NotificationVM[];
   parcels: ParcelVM[];
   passengers: PassengerVM[];
   pendingAtCurrentStopCount: number;
@@ -96,6 +104,7 @@ type OperationsContextValue = {
   toggleTracking: () => void;
   trackingEnabled: boolean;
   trip: typeof tripSeed;
+  unreadNotificationsCount: number;
   weighParcel: (parcelId: string, actualWeightKg: number) => void;
 };
 
@@ -175,6 +184,10 @@ export function OperationsProvider({ children }: PropsWithChildren) {
   const [actualWeights, setActualWeights] = useState<
     Record<string, number | null>
   >(Object.fromEntries(parcelsSeed.map((parcel) => [parcel.id, null])));
+  // Ban đầu mọi thông báo đều ở trạng thái chưa đọc.
+  const [readNotificationIds, setReadNotificationIds] = useState<Set<string>>(
+    () => new Set(),
+  );
 
   const tripInProgress = tripSeed.status === "IN_PROGRESS";
 
@@ -285,6 +298,16 @@ export function OperationsProvider({ children }: PropsWithChildren) {
     return stop;
   });
 
+  const notifications: NotificationVM[] = notificationsSeed.map(
+    (notification) => ({
+      ...notification,
+      read: readNotificationIds.has(notification.id),
+    }),
+  );
+  const unreadNotificationsCount = notifications.filter(
+    (notification) => !notification.read,
+  ).length;
+
   return (
     <OperationsContext.Provider
       value={{
@@ -319,9 +342,23 @@ export function OperationsProvider({ children }: PropsWithChildren) {
         currentStop,
         currentStopArrived,
         departureWarningAcknowledged,
+        markAllNotificationsRead: () =>
+          setReadNotificationIds(
+            new Set(notificationsSeed.map((notification) => notification.id)),
+          ),
         markCurrentStopArrived: () => setCurrentStopArrived(true),
+        markNotificationRead: (notificationId: string) =>
+          setReadNotificationIds((current) => {
+            if (current.has(notificationId)) {
+              return current;
+            }
+
+            const next = new Set(current);
+            next.add(notificationId);
+            return next;
+          }),
         nextStop,
-        notifications: notificationsSeed,
+        notifications,
         parcels,
         passengers,
         pendingAtCurrentStopCount,
@@ -357,6 +394,7 @@ export function OperationsProvider({ children }: PropsWithChildren) {
           setTrackingEnabled((currentValue) => !currentValue),
         trackingEnabled,
         trip: tripSeed,
+        unreadNotificationsCount,
         weighParcel: (parcelId: string, actualWeightKg: number) => {
           const seed = parcelsSeed.find((parcel) => parcel.id === parcelId);
 
