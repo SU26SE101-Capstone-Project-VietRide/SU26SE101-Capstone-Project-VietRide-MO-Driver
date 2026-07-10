@@ -11,10 +11,18 @@ import {
     View,
 } from "react-native";
 
+import { ApiError } from "@/api/client";
+import { streamRagChat } from "@/api/rag";
+import type { SeatCell, TripDetails } from "@/api/types";
+import { EmptyCard, ErrorCard, LoadingCard } from "@/components/query-state";
 import { Fonts, Spacing, type Palette } from "@/constants/theme";
 import {
-    buildDirectionsUrl,
-    seatLayoutSeed,
+    groupManifestByBooking,
+    isBoardedStatus,
+    useManifest,
+    useQrScanMutation,
+} from "@/features/boarding/use-boarding";
+import {
     type ScheduleEntry,
     type Tone,
 } from "@/features/operations/mock-data";
@@ -22,6 +30,21 @@ import {
     SUPPORT_QUICK_PROMPTS,
     useOperations,
 } from "@/features/operations/operations-context";
+import { useUnreadNotificationsCount } from "@/features/notifications/use-notifications";
+import {
+    formatTimeHM,
+    isoDateOf,
+    mapAssignmentRoleLabel,
+    normalizeTripStatus,
+    tripStatusMeta,
+} from "@/features/trips/trip-format";
+import {
+    useActiveTrip,
+    useDriverSchedule,
+    useSeatMap,
+    useTripDetails,
+    useTripDetailsMany,
+} from "@/features/trips/use-trips";
 import {
     ActionButton,
     MetricTile,
@@ -58,40 +81,22 @@ type ChatMessage = {
   text: string;
 };
 
-function openDirections(destination: { lat: number; lng: number }) {
-  const platform =
-    Platform.OS === "ios" ? "ios" : Platform.OS === "android" ? "android" : "web";
+// v1 chưa có tọa độ stop từ API → điều hướng theo tên trạm đích.
+function openDirectionsByName(destinationName: string) {
+  const encoded = encodeURIComponent(destinationName);
+  const url =
+    Platform.OS === "android"
+      ? `google.navigation:q=${encoded}`
+      : Platform.OS === "ios"
+        ? `http://maps.apple.com/?daddr=${encoded}&dirflg=d`
+        : `https://www.google.com/maps/dir/?api=1&destination=${encoded}`;
 
-  void Linking.openURL(buildDirectionsUrl(destination, platform));
-}
-
-function buildAssistantReply(question: string, role: "DRIVER" | "ASSISTANT") {
-  const normalizedQuestion = question.toLowerCase();
-
-  if (
-    normalizedQuestion.includes("trễ") ||
-    normalizedQuestion.includes("delay")
-  ) {
-    return "Nếu xe trễ hơn 30 phút, hãy ưu tiên báo điều hành và hành khách. Tài xế giữ định vị luôn bật, phụ xe rà lại danh sách điểm dừng và khách chưa lên xe.";
-  }
-
-  if (
-    normalizedQuestion.includes("hàng") ||
-    normalizedQuestion.includes("parcel") ||
-    normalizedQuestion.includes("kiện")
-  ) {
-    return role === "ASSISTANT"
-      ? "Kiện ở điểm đích phải đi đúng thứ tự: đã dỡ → chờ người nhận xác nhận. Chỉ mở nút dỡ khi xe đã đến đúng điểm đích."
-      : "Tài xế nên tập trung giữ tuyến và phối hợp với phụ xe về tải trọng, không ôm hết phần xác nhận kiện hàng.";
-  }
-
-  return "Trợ lý sẽ trả lời ngắn gọn, đúng quy trình theo vai trò hiện tại của bạn. Hãy mô tả tình huống cụ thể hơn để nhận hướng dẫn phù hợp.";
+  void Linking.openURL(url);
 }
 
 export function DriverOverviewScreen() {
   const router = useRouter();
   const { displayName } = useAuthenticatedSession();
-  const { schedule } = useOperations();
 
   return (
     <OperationsScreen
@@ -99,10 +104,7 @@ export function DriverOverviewScreen() {
       subtitle={displayName}
       headerRight={<NotificationBell />}
     >
-      <WorkScheduleSection
-        schedule={schedule}
-        onOpenActive={() => router.push("/driver/trip")}
-      />
+      <WorkScheduleSection onOpenActive={() => router.push("/driver/trip")} />
     </OperationsScreen>
   );
 }
@@ -110,7 +112,6 @@ export function DriverOverviewScreen() {
 export function AssistantOverviewScreen() {
   const router = useRouter();
   const { displayName } = useAuthenticatedSession();
-  const { schedule } = useOperations();
 
   return (
     <OperationsScreen
@@ -119,7 +120,6 @@ export function AssistantOverviewScreen() {
       headerRight={<NotificationBell />}
     >
       <WorkScheduleSection
-        schedule={schedule}
         onOpenActive={() => router.push("/assistant/boarding")}
       />
     </OperationsScreen>
@@ -129,75 +129,110 @@ export function AssistantOverviewScreen() {
 export function DriverTripScreen() {
   const styles = useThemedStyles(makeStyles);
   const theme = useTheme();
-  const { currentStop, nextStop, pendingAtCurrentStopCount, routeStops, trip } =
-    useOperations();
+  const activeTrip = useActiveTrip();
+  const detailsQuery = useTripDetails(activeTrip.trip?.tripId ?? null);
+  const details = detailsQuery.data;
+
+  const statusMeta = tripStatusMeta(activeTrip.trip?.status);
+  // Điểm dừng kế tiếp = stop có ETA gần nhất còn ở tương lai.
+  // Chốt "bây giờ" theo lần data đổi để không gọi impure Date.now() khi render.
+  const now = useMemo(() => new Date().getTime(), []);
+  const nextStop = details?.stops
+    .filter((stop) => new Date(stop.estimatedArrivalTime).getTime() > now)
+    .sort((a, b) => a.orderIndex - b.orderIndex)[0];
 
   return (
     <OperationsScreen
       title="Chuyến đang chạy"
-      subtitle={trip.vehicleLabel}
+      subtitle={details?.originStation?.name ?? "Chuyến của bạn hôm nay"}
       headerRight={<NotificationBell />}
     >
-      <SurfaceCard accent delay={0}>
-        <View style={styles.routeSummary}>
-          <View style={styles.routeEndpoint}>
-            <Text style={styles.routeEndpointLabel}>Điểm đi</Text>
-            <Text style={styles.routeEndpointName} numberOfLines={2}>
-              {routeStops[0].name}
-            </Text>
-          </View>
-          <MaterialIcons name="arrow-forward" size={22} color={theme.primary} />
-          <View style={styles.routeEndpoint}>
-            <Text style={styles.routeEndpointLabel}>Điểm đến</Text>
-            <Text style={styles.routeEndpointName} numberOfLines={2}>
-              {routeStops[routeStops.length - 1].name}
-            </Text>
-          </View>
-        </View>
-
-        <View style={styles.metricRow}>
-          <MetricTile
-            icon="my-location"
-            value={currentStop.shortName}
-            hint="Hiện tại"
-            tone="warning"
-            compact
-          />
-          <MetricTile
-            icon="navigation"
-            value={nextStop.shortName}
-            hint={`Đến sau ${trip.nextStopEta}`}
-            tone="primary"
-            compact
-          />
-        </View>
-
-        <View style={styles.metricRow}>
-          <MetricTile
-            icon="timer"
-            value={trip.liveDelayLabel}
-            hint="Trễ giờ"
-            tone={trip.liveDelayMinutes > 20 ? "danger" : "info"}
-            compact
-          />
-          <MetricTile
-            icon="groups"
-            value={String(pendingAtCurrentStopCount)}
-            hint="Chờ lên"
-            tone={pendingAtCurrentStopCount > 0 ? "warning" : "success"}
-            compact
-          />
-        </View>
-
-        <ActionButton
-          icon="directions"
-          label={`Chỉ đường tới ${nextStop.shortName}`}
-          tone="primary"
-          onPress={() => openDirections(nextStop)}
+      {activeTrip.isLoading || (activeTrip.trip && detailsQuery.isLoading) ? (
+        <LoadingCard label="Đang tải chuyến…" />
+      ) : activeTrip.isError ? (
+        <ErrorCard onRetry={() => void activeTrip.refetch()} />
+      ) : !activeTrip.trip ? (
+        <EmptyCard
+          icon="event-busy"
+          message="Hôm nay bạn không có chuyến nào đang chạy hoặc sắp khởi hành."
         />
-      </SurfaceCard>
+      ) : detailsQuery.isError ? (
+        <ErrorCard onRetry={() => void detailsQuery.refetch()} />
+      ) : details ? (
+        <>
+          <SurfaceCard accent delay={0}>
+            <View style={styles.routeSummary}>
+              <View style={styles.routeEndpoint}>
+                <Text style={styles.routeEndpointLabel}>Điểm đi</Text>
+                <Text style={styles.routeEndpointName} numberOfLines={2}>
+                  {details.originStation?.name ?? "—"}
+                </Text>
+              </View>
+              <MaterialIcons
+                name="arrow-forward"
+                size={22}
+                color={theme.primary}
+              />
+              <View style={styles.routeEndpoint}>
+                <Text style={styles.routeEndpointLabel}>Điểm đến</Text>
+                <Text style={styles.routeEndpointName} numberOfLines={2}>
+                  {details.destinationStation?.name ?? "—"}
+                </Text>
+              </View>
+            </View>
 
-      <RouteStopsCard routeStops={routeStops} />
+            <View style={styles.metricRow}>
+              <MetricTile
+                icon="schedule"
+                value={formatTimeHM(details.departureDateTime)}
+                hint="Khởi hành"
+                tone="primary"
+                compact
+              />
+              <MetricTile
+                icon="flag"
+                value={formatTimeHM(details.estimatedArrivalTime)}
+                hint="Đến nơi (dự kiến)"
+                tone="info"
+                compact
+              />
+            </View>
+
+            <View style={styles.metricRow}>
+              <MetricTile
+                icon="event-seat"
+                value={`${details.seatSummary.totalSeats - details.seatSummary.availableSeats}/${details.seatSummary.totalSeats}`}
+                hint="Ghế đã đặt"
+                tone="warning"
+                compact
+              />
+              <MetricTile
+                icon="timeline"
+                value={statusMeta.label}
+                hint="Trạng thái"
+                tone={statusMeta.tone}
+                compact
+              />
+            </View>
+
+            {details.destinationStation?.name ? (
+              <ActionButton
+                icon="directions"
+                label={`Chỉ đường tới ${details.destinationStation.name}`}
+                tone="primary"
+                onPress={() =>
+                  openDirectionsByName(details.destinationStation.name as string)
+                }
+              />
+            ) : null}
+          </SurfaceCard>
+
+          <TripStopsCard
+            details={details}
+            nextStopId={nextStop?.stopId ?? null}
+          />
+        </>
+      ) : null}
     </OperationsScreen>
   );
 }
@@ -329,227 +364,293 @@ type ScanResult = { kind: "success" | "empty"; text: string };
 
 export function AssistantBoardingScreen() {
   const styles = useThemedStyles(makeStyles);
-  const {
-    acknowledgeDepartureWarning,
-    boardingMetrics,
-    currentStop,
-    departureWarningAcknowledged,
-    passengers,
-    pendingAtCurrentStopCount,
-    togglePassengerBoarding,
-  } = useOperations();
+  const theme = useTheme();
+  const activeTrip = useActiveTrip();
+  const tripId = activeTrip.trip?.tripId ?? null;
+  const manifestQuery = useManifest(tripId);
+  const seatMapQuery = useSeatMap(tripId);
+  const qrScan = useQrScanMutation(tripId);
+  const [codeDraft, setCodeDraft] = useState("");
   const [scanResult, setScanResult] = useState<ScanResult | null>(null);
 
-  const seatToPassenger = new Map<string, (typeof passengers)[number]>();
-  passengers.forEach((passenger) =>
-    passenger.seats.forEach((seat) => seatToPassenger.set(seat, passenger)),
+  const items = useMemo(
+    () => manifestQuery.data?.items ?? [],
+    [manifestQuery.data],
   );
+  const groups = useMemo(() => groupManifestByBooking(items), [items]);
+  const boardedSeats = items.filter((item) =>
+    isBoardedStatus(item.boardingStatus),
+  ).length;
+  const pendingSeats = items.length - boardedSeats;
+  const pendingGroups = groups.filter((group) => !group.boarded);
 
-  const pendingHere = passengers.filter(
-    (passenger) =>
-      passenger.pickupStopId === currentStop.id && !passenger.boarded,
-  );
+  // Trạng thái từng ghế để tô sơ đồ (ghế không có trong manifest = trống).
+  const seatStatusByNumber = useMemo(() => {
+    const map = new Map<string, "boarded" | "pending">();
+    items.forEach((item) => {
+      map.set(
+        item.seatNumber,
+        isBoardedStatus(item.boardingStatus) ? "boarded" : "pending",
+      );
+    });
+    return map;
+  }, [items]);
 
-  // Mock quét QR ở cửa xe: vé QR map sẵn tới booking → check-in ngay, không cần
-  // biết số ghế. Ở đây giả lập bằng cách check-in khách PENDING kế tiếp tại điểm.
-  const handleScanCheckIn = () => {
-    const next = pendingHere[0];
+  const handleCheckIn = (bookingCode: string) => {
+    const code = bookingCode.trim();
 
-    if (!next) {
-      setScanResult({
-        kind: "empty",
-        text: `Không còn khách chờ tại ${currentStop.shortName} để lên xe.`,
-      });
+    if (!code || qrScan.isPending) {
       return;
     }
 
-    togglePassengerBoarding(next.id);
-    setScanResult({
-      kind: "success",
-      text: `Đã xác nhận lên xe ${next.bookingCode} • ${next.buyerName} • ghế ${next.seats.join(", ")}.`,
+    setScanResult(null);
+    qrScan.mutate(code, {
+      onSuccess: (data) => {
+        const seats = data.items.map((item) => item.seatNumber).join(", ");
+        setScanResult({
+          kind: "success",
+          text: `Đã xác nhận lên xe ${code.toUpperCase()} • ghế ${seats}.`,
+        });
+        setCodeDraft("");
+      },
+      onError: (error) => {
+        setScanResult({
+          kind: "empty",
+          text:
+            error instanceof ApiError
+              ? error.message
+              : "Không xác nhận được vé. Thử lại.",
+        });
+      },
     });
   };
 
   return (
     <OperationsScreen
       title="Đón khách lên xe"
-      subtitle={`Đang đón tại ${currentStop.name}`}
+      subtitle={
+        activeTrip.trip
+          ? `Khởi hành ${formatTimeHM(activeTrip.trip.departureDateTime)}`
+          : "Chưa có chuyến hôm nay"
+      }
       headerRight={<NotificationBell />}
     >
-      <SurfaceCard accent delay={0}>
-        <View style={styles.metricRowBoarding}>
-          <MetricTile
-            icon="directions-bus"
-            value={String(boardingMetrics.boarded)}
-            hint="Đã lên"
-            tone="success"
-            compact
-          />
-          <MetricTile
-            icon="schedule"
-            value={String(boardingMetrics.pending)}
-            hint="Chưa lên"
-            tone="warning"
-            compact
-          />
-          <MetricTile
-            icon="place"
-            value={String(pendingAtCurrentStopCount)}
-            hint="Cần đón"
-            tone={pendingAtCurrentStopCount > 0 ? "danger" : "success"}
-            compact
-          />
-        </View>
-      </SurfaceCard>
-
-      <SurfaceCard delay={90}>
-        <SectionTitle icon="qr-code-scanner" title="Quét mã QR vé" />
-
-        <ActionButton
-          label="Quét QR vé khách"
-          tone="primary"
-          onPress={handleScanCheckIn}
+      {activeTrip.isLoading ? (
+        <LoadingCard label="Đang tải chuyến hôm nay…" />
+      ) : activeTrip.isError ? (
+        <ErrorCard onRetry={() => void activeTrip.refetch()} />
+      ) : !activeTrip.trip ? (
+        <EmptyCard
+          icon="event-busy"
+          message="Hôm nay bạn không có chuyến nào để đón khách."
         />
+      ) : (
+        <>
+          <SurfaceCard accent delay={0}>
+            <View style={styles.metricRowBoarding}>
+              <MetricTile
+                icon="directions-bus"
+                value={String(boardedSeats)}
+                hint="Đã lên"
+                tone="success"
+                compact
+              />
+              <MetricTile
+                icon="schedule"
+                value={String(pendingSeats)}
+                hint="Chưa lên"
+                tone={pendingSeats > 0 ? "warning" : "success"}
+                compact
+              />
+              <MetricTile
+                icon="confirmation-number"
+                value={String(groups.length)}
+                hint="Số vé"
+                tone="info"
+                compact
+              />
+            </View>
+          </SurfaceCard>
 
-        {scanResult ? (
-          <View
-            style={
-              scanResult.kind === "success"
-                ? styles.scanBanner
-                : styles.scanBannerNeutral
-            }
-          >
-            <StatusChip
-              label={
-                scanResult.kind === "success"
-                  ? "Đã lên xe"
-                  : "Hết khách chờ"
-              }
-              tone={scanResult.kind === "success" ? "success" : "warning"}
+          <SurfaceCard delay={90}>
+            <SectionTitle
+              icon="qr-code-scanner"
+              title="Check-in bằng mã vé"
+              subtitle="Nhập mã booking trên vé QR của khách."
             />
-            <Text style={styles.feedbackText}>{scanResult.text}</Text>
-          </View>
-        ) : null}
-      </SurfaceCard>
 
-      {pendingAtCurrentStopCount > 0 && !departureWarningAcknowledged ? (
-        <SurfaceCard delay={120}>
-          <SectionTitle
-            icon="warning-amber"
-            title="Tránh bỏ sót khách"
-            subtitle={`Còn ${pendingAtCurrentStopCount} khách chưa lên xe tại ${currentStop.shortName}.`}
-          />
+            <View style={styles.composerRow}>
+              <TextInput
+                autoCapitalize="characters"
+                autoCorrect={false}
+                placeholder="VD: BK9D2M"
+                placeholderTextColor={theme.placeholder}
+                style={styles.composerInput}
+                value={codeDraft}
+                onChangeText={setCodeDraft}
+                onSubmitEditing={() => handleCheckIn(codeDraft)}
+                returnKeyType="done"
+              />
+              <ActionButton
+                label={qrScan.isPending ? "Đang xử lý…" : "Xác nhận"}
+                tone="primary"
+                small
+                disabled={qrScan.isPending || codeDraft.trim().length === 0}
+                onPress={() => handleCheckIn(codeDraft)}
+              />
+            </View>
 
-          <View style={styles.actionRow}>
-            <ActionButton
-              label="Quay lại xác nhận"
-              tone="secondary"
-              onPress={() => undefined}
-            />
-            <ActionButton
-              label="Xác nhận rời điểm"
-              tone="danger"
-              onPress={acknowledgeDepartureWarning}
-            />
-          </View>
-        </SurfaceCard>
-      ) : null}
+            {scanResult ? (
+              <View
+                style={
+                  scanResult.kind === "success"
+                    ? styles.scanBanner
+                    : styles.scanBannerNeutral
+                }
+              >
+                <StatusChip
+                  label={scanResult.kind === "success" ? "Đã lên xe" : "Lỗi"}
+                  tone={scanResult.kind === "success" ? "success" : "warning"}
+                />
+                <Text style={styles.feedbackText}>{scanResult.text}</Text>
+              </View>
+            ) : null}
+          </SurfaceCard>
 
-      <SurfaceCard delay={180}>
-        <SectionTitle icon="event-seat" title="Sơ đồ ghế" />
+          {manifestQuery.isLoading || seatMapQuery.isLoading ? (
+            <LoadingCard label="Đang tải danh sách khách…" />
+          ) : manifestQuery.isError ? (
+            <ErrorCard onRetry={() => void manifestQuery.refetch()} />
+          ) : (
+            <>
+              {seatMapQuery.data ? (
+                <SurfaceCard delay={180}>
+                  <SectionTitle icon="event-seat" title="Sơ đồ ghế" />
+                  <ApiSeatGrid
+                    seats={seatMapQuery.data.seats}
+                    seatStatusByNumber={seatStatusByNumber}
+                  />
+                  <View style={styles.seatLegend}>
+                    {(
+                      [
+                        { label: "Đã lên", style: styles.seatBoarded },
+                        { label: "Chưa lên", style: styles.seatPending },
+                        { label: "Trống", style: styles.seatEmpty },
+                      ] as const
+                    ).map((item) => (
+                      <View key={item.label} style={styles.legendItem}>
+                        <View style={[styles.legendDot, item.style]} />
+                        <Text style={styles.legendText}>{item.label}</Text>
+                      </View>
+                    ))}
+                  </View>
+                </SurfaceCard>
+              ) : null}
 
-        <View style={styles.seatGrid}>
-          {seatLayoutSeed.map((row, rowIndex) => (
-            <View key={`row-${rowIndex}`} style={styles.seatRow}>
-              {row.map((seatId, colIndex) => {
-                if (!seatId) {
+              <SurfaceCard delay={240}>
+                <SectionTitle icon="how-to-reg" title="Vé chưa lên xe" />
+
+                {pendingGroups.length === 0 ? (
+                  <Text style={styles.metaText}>
+                    Tất cả khách của chuyến đã lên xe.
+                  </Text>
+                ) : (
+                  <View style={styles.listStack}>
+                    {pendingGroups.map((group) => (
+                      <View key={group.bookingCode} style={styles.pendingRow}>
+                        <View style={styles.passengerHead}>
+                          <Text style={styles.bookingCode}>
+                            {group.bookingCode}
+                          </Text>
+                          <Text style={styles.metaText}>
+                            Ghế {group.seats.join(", ")}
+                          </Text>
+                        </View>
+                        <ActionButton
+                          label="Xác nhận lên xe"
+                          tone="primary"
+                          small
+                          disabled={qrScan.isPending}
+                          onPress={() => handleCheckIn(group.bookingCode)}
+                        />
+                      </View>
+                    ))}
+                  </View>
+                )}
+              </SurfaceCard>
+            </>
+          )}
+        </>
+      )}
+    </OperationsScreen>
+  );
+}
+
+// Sơ đồ ghế từ API seat-map: dựng lưới theo row/col (deck 1 trước, deck 2 nếu có).
+function ApiSeatGrid({
+  seatStatusByNumber,
+  seats,
+}: {
+  seatStatusByNumber: Map<string, "boarded" | "pending">;
+  seats: SeatCell[];
+}) {
+  const styles = useThemedStyles(makeStyles);
+
+  const decks = [...new Set(seats.map((seat) => seat.deck))].sort();
+
+  return (
+    <View style={styles.seatGrid}>
+      {decks.map((deck) => {
+        const deckSeats = seats.filter((seat) => seat.deck === deck);
+        const rows = [...new Set(deckSeats.map((seat) => seat.row))].sort(
+          (a, b) => a - b,
+        );
+        const maxCol = Math.max(...deckSeats.map((seat) => seat.col));
+
+        return (
+          <View key={`deck-${deck}`} style={styles.seatGrid}>
+            {decks.length > 1 ? (
+              <Text style={styles.metaText}>Tầng {deck}</Text>
+            ) : null}
+            {rows.map((row) => (
+              <View key={`row-${deck}-${row}`} style={styles.seatRow}>
+                {Array.from({ length: maxCol + 1 }, (_, col) => {
+                  const seat = deckSeats.find(
+                    (item) => item.row === row && item.col === col,
+                  );
+
+                  if (!seat || !seat.seatNumber) {
+                    // Ô không có ghế = lối đi.
+                    return (
+                      <View
+                        key={`aisle-${deck}-${row}-${col}`}
+                        style={styles.seatAisle}
+                      />
+                    );
+                  }
+
+                  const boarding = seatStatusByNumber.get(seat.seatNumber);
+
                   return (
                     <View
-                      key={`aisle-${rowIndex}-${colIndex}`}
-                      style={styles.seatAisle}
-                    />
+                      key={seat.seatNumber}
+                      style={[
+                        styles.seatCell,
+                        boarding == null && styles.seatEmpty,
+                        boarding === "boarded" && styles.seatBoarded,
+                        boarding === "pending" && styles.seatPending,
+                      ]}
+                    >
+                      <Text style={styles.seatLabel}>{seat.seatNumber}</Text>
+                    </View>
                   );
-                }
-
-                const passenger = seatToPassenger.get(seatId);
-                const isPendingHere =
-                  passenger != null &&
-                  !passenger.boarded &&
-                  passenger.pickupStopId === currentStop.id;
-
-                return (
-                  <View
-                    key={seatId}
-                    style={[
-                      styles.seatCell,
-                      passenger == null && styles.seatEmpty,
-                      passenger?.boarded && styles.seatBoarded,
-                      passenger != null &&
-                        !passenger.boarded &&
-                        styles.seatPending,
-                      isPendingHere && styles.seatPendingHere,
-                    ]}
-                  >
-                    <Text style={styles.seatLabel}>{seatId}</Text>
-                  </View>
-                );
-              })}
-            </View>
-          ))}
-        </View>
-
-        <View style={styles.seatLegend}>
-          {(
-            [
-              { label: "Đã lên", style: styles.seatBoarded },
-              { label: "Chưa lên", style: styles.seatPending },
-              { label: "Cần đón ở điểm này", style: styles.seatPendingHere },
-              { label: "Trống", style: styles.seatEmpty },
-            ] as const
-          ).map((item) => (
-            <View key={item.label} style={styles.legendItem}>
-              <View style={[styles.legendDot, item.style]} />
-              <Text style={styles.legendText}>{item.label}</Text>
-            </View>
-          ))}
-        </View>
-      </SurfaceCard>
-
-      <SurfaceCard delay={240}>
-        <SectionTitle
-          icon="how-to-reg"
-          title={`Cần đón tại ${currentStop.shortName}`}
-        />
-
-        {pendingHere.length === 0 ? (
-          <Text style={styles.metaText}>Đã xác nhận hết khách tại điểm này.</Text>
-        ) : (
-          <View style={styles.listStack}>
-            {pendingHere.map((passenger) => (
-              <View key={passenger.id} style={styles.pendingRow}>
-                <View style={styles.passengerHead}>
-                  <Text style={styles.bookingCode}>
-                    {passenger.bookingCode}
-                  </Text>
-                  <Text style={styles.passengerName}>
-                    {passenger.buyerName}
-                  </Text>
-                  <Text style={styles.metaText}>
-                    Ghế {passenger.seats.join(", ")}
-                  </Text>
-                </View>
-                <ActionButton
-                  label="Xác nhận lên xe"
-                  tone="primary"
-                  small
-                  onPress={() => togglePassengerBoarding(passenger.id)}
-                />
+                })}
               </View>
             ))}
           </View>
-        )}
-      </SurfaceCard>
-    </OperationsScreen>
+        );
+      })}
+    </View>
   );
 }
 
@@ -881,8 +982,10 @@ export function AssistantStopsScreen() {
 export function CrewSupportScreen() {
   const styles = useThemedStyles(makeStyles);
   const theme = useTheme();
-  const { role } = useOperations();
+  const { role } = useAuthenticatedSession();
   const [draft, setDraft] = useState("");
+  const [streaming, setStreaming] = useState(false);
+  const [conversationId, setConversationId] = useState<string | null>(null);
   const roleLabel = role === "ASSISTANT" ? "phụ xe" : "tài xế";
   const [messages, setMessages] = useState<ChatMessage[]>([
     {
@@ -892,27 +995,63 @@ export function CrewSupportScreen() {
     },
   ]);
 
-  const sendMessage = (question: string) => {
+  const appendToMessage = (messageId: string, chunk: string) => {
+    setMessages((currentMessages) =>
+      currentMessages.map((message) =>
+        message.id === messageId
+          ? { ...message, text: message.text + chunk }
+          : message,
+      ),
+    );
+  };
+
+  // Gửi câu hỏi lên RAG service, stream từng token vào bong bóng trả lời.
+  const sendMessage = async (question: string) => {
     const trimmedQuestion = question.trim();
 
-    if (!trimmedQuestion) {
+    if (!trimmedQuestion || streaming) {
       return;
     }
 
+    const requestId = new Date().getTime();
+    const answerId = `${requestId}-a`;
     setMessages((currentMessages) => [
       ...currentMessages,
-      {
-        id: `${currentMessages.length + 1}-q`,
-        speaker: "user",
-        text: trimmedQuestion,
-      },
-      {
-        id: `${currentMessages.length + 1}-a`,
-        speaker: "assistant",
-        text: buildAssistantReply(trimmedQuestion, role),
-      },
+      { id: `${requestId}-q`, speaker: "user", text: trimmedQuestion },
+      { id: answerId, speaker: "assistant", text: "" },
     ]);
     setDraft("");
+    setStreaming(true);
+
+    try {
+      await streamRagChat({
+        message: trimmedQuestion,
+        conversationId,
+        onToken: (text) => appendToMessage(answerId, text),
+        onDone: (payload) => {
+          const nextId = payload?.conversationId;
+          if (typeof nextId === "string") {
+            setConversationId(nextId);
+          }
+        },
+      });
+    } catch (error) {
+      const fallback =
+        error instanceof ApiError
+          ? error.message
+          : "Trợ lý ảo đang gián đoạn, thử lại sau.";
+      appendToMessage(answerId, fallback);
+    } finally {
+      setStreaming(false);
+      // Nếu stream kết thúc mà không có token nào → báo không có trả lời.
+      setMessages((currentMessages) =>
+        currentMessages.map((message) =>
+          message.id === answerId && message.text === ""
+            ? { ...message, text: "Trợ lý chưa trả lời được câu này." }
+            : message,
+        ),
+      );
+    }
   };
 
   return (
@@ -936,7 +1075,8 @@ export function CrewSupportScreen() {
               label={prompt}
               tone="secondary"
               small
-              onPress={() => sendMessage(prompt)}
+              disabled={streaming}
+              onPress={() => void sendMessage(prompt)}
             />
           ))}
         </View>
@@ -978,17 +1118,22 @@ export function CrewSupportScreen() {
             placeholder="Nhập câu hỏi của bạn…"
             placeholderTextColor={theme.placeholder}
             style={styles.composerInput}
-            onSubmitEditing={() => sendMessage(draft)}
+            onSubmitEditing={() => void sendMessage(draft)}
             returnKeyType="send"
           />
           <Pressable
             accessibilityRole="button"
-            disabled={draft.trim().length === 0}
-            onPress={() => sendMessage(draft)}
+            disabled={draft.trim().length === 0 || streaming}
+            onPress={() => void sendMessage(draft)}
             style={({ pressed }) => [
               styles.sendButton,
               {
-                opacity: draft.trim().length === 0 ? 0.4 : pressed ? 0.88 : 1,
+                opacity:
+                  draft.trim().length === 0 || streaming
+                    ? 0.4
+                    : pressed
+                      ? 0.88
+                      : 1,
               },
             ]}
           >
@@ -1028,7 +1173,7 @@ export function NotificationBell() {
   const styles = useThemedStyles(makeStyles);
   const theme = useTheme();
   const router = useRouter();
-  const { unreadNotificationsCount } = useOperations();
+  const unreadNotificationsCount = useUnreadNotificationsCount();
 
   return (
     <Pressable
@@ -1091,10 +1236,8 @@ function chunk<T>(items: T[], size: number): T[][] {
 
 function WorkScheduleSection({
   onOpenActive,
-  schedule,
 }: {
   onOpenActive: () => void;
-  schedule: ScheduleEntry[];
 }) {
   const styles = useThemedStyles(makeStyles);
   const theme = useTheme();
@@ -1104,11 +1247,65 @@ function WorkScheduleSection({
   const [anchor, setAnchor] = useState(today);
   const [selectedISO, setSelectedISO] = useState(todayISO);
 
-  const daysWithTrips = useMemo(
-    () => new Set(schedule.map((entry) => entry.date)),
-    [schedule],
+  // Khoảng ngày đang hiển thị trên lịch → tham số from/to gọi API.
+  const range = useMemo(() => {
+    if (mode === "week") {
+      const start = startOfWeekMonday(anchor);
+      return { from: isoOf(start), to: isoOf(addDays(start, 6)) };
+    }
+
+    const monthStart = new Date(anchor.getFullYear(), anchor.getMonth(), 1);
+    const monthEnd = new Date(anchor.getFullYear(), anchor.getMonth() + 1, 0);
+    return { from: isoOf(monthStart), to: isoOf(monthEnd) };
+  }, [mode, anchor]);
+
+  const scheduleQuery = useDriverSchedule(range.from, range.to);
+  const trips = useMemo(
+    () => scheduleQuery.data?.trips ?? [],
+    [scheduleQuery.data],
   );
-  const dayEntries = schedule.filter((entry) => entry.date === selectedISO);
+
+  // Chi tiết các chuyến của ngày đang chọn (để hiện tên tuyến).
+  const dayTrips = useMemo(
+    () =>
+      trips.filter(
+        (trip) => isoDateOf(new Date(trip.departureDateTime)) === selectedISO,
+      ),
+    [trips, selectedISO],
+  );
+  const dayTripDetails = useTripDetailsMany(dayTrips.map((trip) => trip.tripId));
+
+  const daysWithTrips = useMemo(
+    () =>
+      new Set(trips.map((trip) => isoDateOf(new Date(trip.departureDateTime)))),
+    [trips],
+  );
+
+  // Map ScheduleTrip → ScheduleEntry để giữ nguyên phần render bên dưới.
+  const dayEntries: ScheduleEntry[] = dayTrips.map((trip) => {
+    const meta = tripStatusMeta(trip.status);
+    const details = dayTripDetails.get(trip.tripId);
+    const routeName =
+      details?.originStation?.name && details?.destinationStation?.name
+        ? `${details.originStation.name} → ${details.destinationStation.name}`
+        : "Đang tải tuyến…";
+
+    return {
+      id: trip.tripId,
+      date: isoDateOf(new Date(trip.departureDateTime)),
+      routeName,
+      window: `${formatTimeHM(trip.departureDateTime)} – ${formatTimeHM(trip.estimatedArrivalTime)}`,
+      vehicleLabel: `Vai trò: ${mapAssignmentRoleLabel(trip.assignmentRole)}`,
+      statusLabel: meta.label,
+      tone: meta.tone,
+      kind:
+        normalizeTripStatus(trip.status) === "IN_PROGRESS"
+          ? "active"
+          : normalizeTripStatus(trip.status) === "COMPLETED"
+            ? "past"
+            : "upcoming",
+    };
+  });
 
   const goPrev = () =>
     setAnchor((current) =>
@@ -1308,51 +1505,131 @@ function WorkScheduleSection({
         )}
       </SurfaceCard>
 
-      <SurfaceCard delay={90}>
-        <View style={styles.scheduleHeaderRow}>
-          <Text style={styles.scheduleDayTitle}>{dayTitle}</Text>
-          <StatusChip
-            label={`${dayEntries.length} ca`}
-            tone={dayEntries.length > 0 ? "primary" : "neutral"}
-          />
-        </View>
-
-        {dayEntries.length === 0 ? (
-          <Text style={styles.metaText}>Không có ca chạy trong ngày này.</Text>
-        ) : (
-          <View style={styles.listStack}>
-            {dayEntries.map((entry) => (
-              <View key={entry.id} style={styles.scheduleEntry}>
-                <View style={styles.scheduleEntryHead}>
-                  <Text style={styles.scheduleRoute}>{entry.routeName}</Text>
-                  <StatusChip label={entry.statusLabel} tone={entry.tone} />
-                </View>
-                <View style={styles.metaRow}>
-                  <MaterialIcons name="schedule" size={15} color={theme.textSecondary} />
-                  <Text style={styles.metaText}>{entry.window}</Text>
-                </View>
-                <View style={styles.metaRow}>
-                  <MaterialIcons
-                    name="directions-bus"
-                    size={15}
-                    color={theme.textSecondary}
-                  />
-                  <Text style={styles.metaText}>{entry.vehicleLabel}</Text>
-                </View>
-                {entry.kind === "active" ? (
-                  <ActionButton
-                    label="Tiếp tục chuyến"
-                    tone="primary"
-                    small
-                    onPress={onOpenActive}
-                  />
-                ) : null}
-              </View>
-            ))}
+      {scheduleQuery.isLoading ? (
+        <LoadingCard label="Đang tải lịch làm việc…" />
+      ) : scheduleQuery.isError ? (
+        <ErrorCard onRetry={() => void scheduleQuery.refetch()} />
+      ) : (
+        <SurfaceCard delay={90}>
+          <View style={styles.scheduleHeaderRow}>
+            <Text style={styles.scheduleDayTitle}>{dayTitle}</Text>
+            <StatusChip
+              label={`${dayEntries.length} ca`}
+              tone={dayEntries.length > 0 ? "primary" : "neutral"}
+            />
           </View>
-        )}
-      </SurfaceCard>
+
+          {dayEntries.length === 0 ? (
+            <Text style={styles.metaText}>Không có ca chạy trong ngày này.</Text>
+          ) : (
+            <View style={styles.listStack}>
+              {dayEntries.map((entry) => (
+                <View key={entry.id} style={styles.scheduleEntry}>
+                  <View style={styles.scheduleEntryHead}>
+                    <Text style={styles.scheduleRoute}>{entry.routeName}</Text>
+                    <StatusChip label={entry.statusLabel} tone={entry.tone} />
+                  </View>
+                  <View style={styles.metaRow}>
+                    <MaterialIcons name="schedule" size={15} color={theme.textSecondary} />
+                    <Text style={styles.metaText}>{entry.window}</Text>
+                  </View>
+                  <View style={styles.metaRow}>
+                    <MaterialIcons
+                      name="directions-bus"
+                      size={15}
+                      color={theme.textSecondary}
+                    />
+                    <Text style={styles.metaText}>{entry.vehicleLabel}</Text>
+                  </View>
+                  {entry.kind === "active" ? (
+                    <ActionButton
+                      label="Tiếp tục chuyến"
+                      tone="primary"
+                      small
+                      onPress={onOpenActive}
+                    />
+                  ) : null}
+                </View>
+              ))}
+            </View>
+          )}
+        </SurfaceCard>
+      )}
     </>
+  );
+}
+
+// Tiến trình tuyến từ API. Gap backend: stop chỉ có id + ETA, không có tên
+// → hiển thị "Điểm dừng {orderIndex}" kèm giờ và loại đón/trả.
+function TripStopsCard({
+  details,
+  nextStopId,
+}: {
+  details: TripDetails;
+  nextStopId: string | null;
+}) {
+  const styles = useThemedStyles(makeStyles);
+  const stops = [...details.stops].sort((a, b) => a.orderIndex - b.orderIndex);
+  // Chốt "bây giờ" theo details để render thuần (không gọi Date.now() trực tiếp).
+  const now = useMemo(() => new Date().getTime(), []);
+
+  return (
+    <SurfaceCard delay={120}>
+      <SectionTitle icon="route" title="Tiến trình tuyến" />
+
+      <View style={styles.stopStack}>
+        {stops.map((stop) => {
+          const arrived =
+            new Date(stop.estimatedArrivalTime).getTime() <= now;
+          const isNext = stop.stopId === nextStopId;
+
+          return (
+            <View key={stop.stopId} style={styles.stopRow}>
+              <View style={styles.stopMarkerColumn}>
+                <View
+                  style={[
+                    styles.stopMarker,
+                    arrived && styles.stopMarkerCompleted,
+                    isNext && styles.stopMarkerCurrent,
+                  ]}
+                />
+                <View
+                  style={arrived ? styles.stopLineActive : styles.stopLine}
+                />
+              </View>
+
+              <View style={styles.stopContent}>
+                <View style={styles.stopHeader}>
+                  <View style={styles.stopNameBlock}>
+                    <Text style={styles.stopTitle}>
+                      Điểm dừng {stop.orderIndex}
+                    </Text>
+                    <Text style={styles.stopSubtitle}>
+                      {[
+                        stop.allowPickup ? "Đón khách" : null,
+                        stop.allowDropoff ? "Trả khách" : null,
+                      ]
+                        .filter(Boolean)
+                        .join(" • ") || "Chỉ dừng kỹ thuật"}
+                    </Text>
+                  </View>
+                  <StatusChip
+                    label={isNext ? "Kế tiếp" : arrived ? "Đã qua" : "Sắp tới"}
+                    tone={isNext ? "warning" : arrived ? "success" : "neutral"}
+                  />
+                </View>
+                <Text style={styles.stopMeta}>
+                  Dự kiến {formatTimeHM(stop.estimatedArrivalTime)}
+                  {stop.distanceFromOriginKm != null
+                    ? ` • km ${stop.distanceFromOriginKm}`
+                    : ""}
+                </Text>
+              </View>
+            </View>
+          );
+        })}
+      </View>
+    </SurfaceCard>
   );
 }
 

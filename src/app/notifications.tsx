@@ -5,8 +5,18 @@ import { Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 import Animated, { FadeInDown } from "react-native-reanimated";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
+import { ErrorCard, LoadingCard } from "@/components/query-state";
 import { Fonts, Spacing, type Palette } from "@/constants/theme";
-import { useOperations } from "@/features/operations/operations-context";
+import {
+    formatRelativeTime,
+    notificationBadgeOf,
+    notificationToneOf,
+} from "@/features/notifications/notification-format";
+import {
+    useMarkNotificationReadMutation,
+    useNotificationList,
+    useUnreadNotificationsCount,
+} from "@/features/notifications/use-notifications";
 import {
     NOTIFICATION_COLOR,
     NOTIFICATION_ICON,
@@ -20,12 +30,36 @@ export default function NotificationsScreen() {
   const insets = useSafeAreaInsets();
   const theme = useTheme();
   const styles = useThemedStyles(makeStyles);
-  const {
-    notifications,
-    unreadNotificationsCount,
-    markNotificationRead,
-    markAllNotificationsRead,
-  } = useOperations();
+  const [page, setPage] = useState(1);
+  const listQuery = useNotificationList({ page });
+  const unreadNotificationsCount = useUnreadNotificationsCount();
+  const markRead = useMarkNotificationReadMutation();
+
+  // Chốt "bây giờ" theo lần data đổi để format thời gian tương đối khi render.
+  const now = useMemo(() => new Date().getTime(), []);
+
+  const notifications = useMemo(
+    () =>
+      (listQuery.data?.items ?? []).map((item) => ({
+        id: item.id,
+        title: item.title,
+        body: item.body,
+        badge: notificationBadgeOf(item.type),
+        tone: notificationToneOf(item.type),
+        time: formatRelativeTime(item.createdAt, now),
+        read: item.readAt != null,
+      })),
+    [listQuery.data, now],
+  );
+
+  // API không có endpoint "đọc tất cả" → PATCH song song các item chưa đọc
+  // của trang hiện tại.
+  const handleMarkAllRead = () => {
+    const unreadItems = (listQuery.data?.items ?? []).filter(
+      (item) => item.readAt == null,
+    );
+    unreadItems.forEach((item) => markRead.mutate(item.id));
+  };
 
   // Danh sách bộ lọc = "Tất cả" + các loại (badge) duy nhất theo thứ tự xuất hiện.
   const filters = useMemo(() => {
@@ -77,7 +111,7 @@ export default function NotificationsScreen() {
           <Pressable
             accessibilityRole="button"
             hitSlop={8}
-            onPress={markAllNotificationsRead}
+            onPress={handleMarkAllRead}
             style={styles.readAllButton}
           >
             <MaterialIcons name="done-all" size={16} color={theme.primary} />
@@ -122,7 +156,11 @@ export default function NotificationsScreen() {
           { paddingBottom: insets.bottom + Spacing.four },
         ]}
       >
-        {visibleNotifications.length === 0 ? (
+        {listQuery.isLoading ? (
+          <LoadingCard label="Đang tải thông báo…" />
+        ) : listQuery.isError ? (
+          <ErrorCard onRetry={() => void listQuery.refetch()} />
+        ) : visibleNotifications.length === 0 ? (
           <View style={styles.emptyState}>
             <MaterialIcons
               name="notifications-off"
@@ -146,7 +184,11 @@ export default function NotificationsScreen() {
               >
                 <Pressable
                   accessibilityRole="button"
-                  onPress={() => markNotificationRead(notification.id)}
+                  onPress={() => {
+                    if (!notification.read) {
+                      markRead.mutate(notification.id);
+                    }
+                  }}
                   style={[
                     styles.item,
                     notification.read
@@ -202,6 +244,32 @@ export default function NotificationsScreen() {
             );
           })
         )}
+
+        {/* Phân trang đơn giản theo page/totalPages từ API. */}
+        {listQuery.data && listQuery.data.totalPages > 1 ? (
+          <View style={styles.pagerRow}>
+            {page > 1 ? (
+              <Pressable
+                accessibilityRole="button"
+                onPress={() => setPage((current) => Math.max(1, current - 1))}
+                style={styles.readAllButton}
+              >
+                <Text style={styles.readAllText}>Trang trước</Text>
+              </Pressable>
+            ) : null}
+            {listQuery.data.hasNextPage ? (
+              <Pressable
+                accessibilityRole="button"
+                onPress={() => setPage((current) => current + 1)}
+                style={styles.readAllButton}
+              >
+                <Text style={styles.readAllText}>
+                  Trang sau ({page}/{listQuery.data.totalPages})
+                </Text>
+              </Pressable>
+            ) : null}
+          </View>
+        ) : null}
       </ScrollView>
     </View>
   );
@@ -384,6 +452,12 @@ const makeStyles = (c: Palette) =>
       borderRadius: 999,
       backgroundColor: c.primary,
       marginTop: 4,
+    },
+    pagerRow: {
+      flexDirection: "row",
+      justifyContent: "center",
+      gap: Spacing.two,
+      paddingTop: Spacing.two,
     },
     emptyState: {
       alignItems: "center",

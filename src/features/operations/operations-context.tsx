@@ -5,39 +5,20 @@ import {
     type PropsWithChildren,
 } from "react";
 
-import { useAuthenticatedSession } from "@/features/session/session-context";
 import {
-    assignmentsSeed,
-    buildScheduleSeed,
-    notificationsSeed,
     parcelsSeed,
     passengersSeed,
     routeStopsSeed,
     supportQuickPromptsSeed,
     tripSeed,
-    type NotificationSeed,
     type ParcelStatus,
-    type ScheduleEntry,
     type Tone,
 } from "./mock-data";
 
-// Thông báo kèm trạng thái đã đọc/chưa đọc do người dùng tương tác.
-export type NotificationVM = NotificationSeed & {
-  read: boolean;
-};
-
-type PassengerVM = {
-  id: string;
-  bookingCode: string;
-  buyerName: string;
-  contactPhone: string;
-  seats: string[];
-  pickupStopId: string;
-  pickupStopName: string;
-  boarded: boolean;
-  boardingStatusLabel: string;
-  tone: Tone;
-};
+// Provider này CHỈ còn phục vụ các tính năng chưa có API thật (mock):
+// hàng ký gửi (cargo), điểm dừng/confirm arrival (stops) và báo sự cố.
+// Lịch làm việc, boarding, notifications, chat đã chuyển sang React Query
+// hooks gọi API thật — xem src/features/trips, boarding, notifications.
 
 type ParcelVM = {
   id: string;
@@ -64,13 +45,7 @@ type ParcelVM = {
 };
 
 type OperationsContextValue = {
-  acknowledgeDepartureWarning: () => void;
   advanceParcelStatus: (parcelId: string) => void;
-  assignments: typeof assignmentsSeed;
-  boardingMetrics: {
-    boarded: number;
-    pending: number;
-  };
   cargoMetrics: {
     loaded: number;
     total: number;
@@ -84,27 +59,13 @@ type OperationsContextValue = {
   };
   currentStop: (typeof routeStopsSeed)[number];
   currentStopArrived: boolean;
-  departureWarningAcknowledged: boolean;
-  markAllNotificationsRead: () => void;
   markCurrentStopArrived: () => void;
-  markNotificationRead: (notificationId: string) => void;
   nextStop: (typeof routeStopsSeed)[number];
-  notifications: NotificationVM[];
   parcels: ParcelVM[];
-  passengers: PassengerVM[];
   pendingAtCurrentStopCount: number;
-  role: ReturnType<typeof useAuthenticatedSession>["role"];
-  routeProgress: {
-    boarded: number;
-  };
   routeStops: (typeof routeStopsSeed)[number][];
-  schedule: ScheduleEntry[];
   settleAdditionalPayment: (parcelId: string) => void;
-  togglePassengerBoarding: (passengerId: string) => void;
-  toggleTracking: () => void;
-  trackingEnabled: boolean;
   trip: typeof tripSeed;
-  unreadNotificationsCount: number;
   weighParcel: (parcelId: string, actualWeightKg: number) => void;
 };
 
@@ -118,14 +79,6 @@ const PARCEL_NEXT_STATUS: Partial<Record<ParcelStatus, ParcelStatus>> = {
   LOADED: "IN_TRANSIT",
   IN_TRANSIT: "UNLOADED",
   UNLOADED: "DELIVERED_PENDING_CONFIRM",
-};
-
-const PASSENGER_STATUS_CONFIG: Record<
-  "BOARDED" | "PENDING",
-  { label: string; tone: Tone }
-> = {
-  BOARDED: { label: "Đã lên xe", tone: "success" },
-  PENDING: { label: "Chưa lên xe", tone: "warning" },
 };
 
 const PARCEL_STATUS_CONFIG: Record<
@@ -163,19 +116,7 @@ const PARCEL_STATUS_CONFIG: Record<
 export const SUPPORT_QUICK_PROMPTS = supportQuickPromptsSeed;
 
 export function OperationsProvider({ children }: PropsWithChildren) {
-  const { role } = useAuthenticatedSession();
-  const [trackingEnabled, setTrackingEnabled] = useState(true);
-  const [departureWarningAcknowledged, setDepartureWarningAcknowledged] =
-    useState(false);
   const [currentStopArrived, setCurrentStopArrived] = useState(false);
-  const [schedule] = useState(() => buildScheduleSeed(new Date()));
-  const [boardedPassengerIds, setBoardedPassengerIds] = useState(
-    new Set(
-      passengersSeed
-        .filter((passenger) => passenger.boardingStatus === "BOARDED")
-        .map((passenger) => passenger.id),
-    ),
-  );
   const [parcelStatuses, setParcelStatuses] = useState<
     Record<string, ParcelStatus>
   >(
@@ -184,24 +125,8 @@ export function OperationsProvider({ children }: PropsWithChildren) {
   const [actualWeights, setActualWeights] = useState<
     Record<string, number | null>
   >(Object.fromEntries(parcelsSeed.map((parcel) => [parcel.id, null])));
-  // Ban đầu mọi thông báo đều ở trạng thái chưa đọc.
-  const [readNotificationIds, setReadNotificationIds] = useState<Set<string>>(
-    () => new Set(),
-  );
 
   const tripInProgress = tripSeed.status === "IN_PROGRESS";
-
-  const passengers: PassengerVM[] = passengersSeed.map((passenger) => {
-    const boarded = boardedPassengerIds.has(passenger.id);
-    const config = PASSENGER_STATUS_CONFIG[boarded ? "BOARDED" : "PENDING"];
-
-    return {
-      ...passenger,
-      boarded,
-      boardingStatusLabel: config.label,
-      tone: config.tone,
-    };
-  });
 
   const currentStop =
     routeStopsSeed.find((stop) => stop.id === CURRENT_STOP_ID) ??
@@ -209,6 +134,13 @@ export function OperationsProvider({ children }: PropsWithChildren) {
   const nextStop =
     routeStopsSeed.find((stop) => stop.id === NEXT_STOP_ID) ??
     routeStopsSeed[2];
+
+  // Màn stops (mock) vẫn hiển thị số khách chờ tại điểm hiện tại theo seed tĩnh.
+  const pendingAtCurrentStopCount = passengersSeed.filter(
+    (passenger) =>
+      passenger.pickupStopId === CURRENT_STOP_ID &&
+      passenger.boardingStatus !== "BOARDED",
+  ).length;
 
   const parcels: ParcelVM[] = parcelsSeed.map((parcel) => {
     const status = parcelStatuses[parcel.id] ?? parcel.status;
@@ -242,15 +174,6 @@ export function OperationsProvider({ children }: PropsWithChildren) {
       nextActionHint,
     };
   });
-
-  const boardingMetrics = {
-    boarded: passengers.filter((passenger) => passenger.boarded).length,
-    pending: passengers.filter((passenger) => !passenger.boarded).length,
-  };
-  const pendingAtCurrentStopCount = passengers.filter(
-    (passenger) =>
-      passenger.pickupStopId === CURRENT_STOP_ID && !passenger.boarded,
-  ).length;
 
   // totalLoadedWeightKg (BR 6.6e) = hàng đang vật lý trên xe = LOADED + IN_TRANSIT.
   const onBoardWeightKg = parcels
@@ -298,21 +221,9 @@ export function OperationsProvider({ children }: PropsWithChildren) {
     return stop;
   });
 
-  const notifications: NotificationVM[] = notificationsSeed.map(
-    (notification) => ({
-      ...notification,
-      read: readNotificationIds.has(notification.id),
-    }),
-  );
-  const unreadNotificationsCount = notifications.filter(
-    (notification) => !notification.read,
-  ).length;
-
   return (
     <OperationsContext.Provider
       value={{
-        acknowledgeDepartureWarning: () =>
-          setDepartureWarningAcknowledged(true),
         advanceParcelStatus: (parcelId: string) => {
           setParcelStatuses((currentStatuses) => {
             const currentStatus = currentStatuses[parcelId];
@@ -336,38 +247,14 @@ export function OperationsProvider({ children }: PropsWithChildren) {
             return { ...currentStatuses, [parcelId]: nextStatus };
           });
         },
-        assignments: assignmentsSeed,
-        boardingMetrics,
         cargoMetrics,
         currentStop,
         currentStopArrived,
-        departureWarningAcknowledged,
-        markAllNotificationsRead: () =>
-          setReadNotificationIds(
-            new Set(notificationsSeed.map((notification) => notification.id)),
-          ),
         markCurrentStopArrived: () => setCurrentStopArrived(true),
-        markNotificationRead: (notificationId: string) =>
-          setReadNotificationIds((current) => {
-            if (current.has(notificationId)) {
-              return current;
-            }
-
-            const next = new Set(current);
-            next.add(notificationId);
-            return next;
-          }),
         nextStop,
-        notifications,
         parcels,
-        passengers,
         pendingAtCurrentStopCount,
-        role,
-        routeProgress: {
-          boarded: boardingMetrics.boarded,
-        },
         routeStops,
-        schedule,
         settleAdditionalPayment: (parcelId: string) => {
           // KH đã trả phụ phí cân lại → quay về luồng nhận lên xe (LOADED).
           setParcelStatuses((currentStatuses) =>
@@ -376,25 +263,7 @@ export function OperationsProvider({ children }: PropsWithChildren) {
               : currentStatuses,
           );
         },
-        togglePassengerBoarding: (passengerId: string) => {
-          setBoardedPassengerIds((currentIds) => {
-            const nextIds = new Set(currentIds);
-
-            if (nextIds.has(passengerId)) {
-              nextIds.delete(passengerId);
-            } else {
-              nextIds.add(passengerId);
-            }
-
-            return nextIds;
-          });
-          setDepartureWarningAcknowledged(false);
-        },
-        toggleTracking: () =>
-          setTrackingEnabled((currentValue) => !currentValue),
-        trackingEnabled,
         trip: tripSeed,
-        unreadNotificationsCount,
         weighParcel: (parcelId: string, actualWeightKg: number) => {
           const seed = parcelsSeed.find((parcel) => parcel.id === parcelId);
 

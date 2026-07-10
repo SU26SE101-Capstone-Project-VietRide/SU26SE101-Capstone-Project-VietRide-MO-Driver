@@ -1,5 +1,7 @@
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { DarkTheme, DefaultTheme, Slot, Stack, ThemeProvider } from "expo-router";
 import { type PropsWithChildren } from "react";
+import { ActivityIndicator, View } from "react-native";
 import {
     SafeAreaProvider,
     initialWindowMetrics,
@@ -12,15 +14,29 @@ import {
     useSession,
 } from "@/features/session/session-context";
 import { ThemeModeProvider, useThemeMode } from "@/features/theme/theme-mode";
+import { useTheme } from "@/hooks/use-theme";
+
+// Cache mặc định: dữ liệu vận hành đổi thường xuyên nên staleTime ngắn;
+// retry 1 lần là đủ vì client đã tự refresh token khi 401.
+const queryClient = new QueryClient({
+  defaultOptions: {
+    queries: {
+      staleTime: 30_000,
+      retry: 1,
+    },
+  },
+});
 
 export default function TabLayout() {
   return (
     <SafeAreaProvider initialMetrics={initialWindowMetrics}>
       <ThemeModeProvider>
         <ThemedNavigation>
-          <SessionProvider>
-            <AppSessionGate />
-          </SessionProvider>
+          <QueryClientProvider client={queryClient}>
+            <SessionProvider>
+              <AppSessionGate />
+            </SessionProvider>
+          </QueryClientProvider>
         </ThemedNavigation>
       </ThemeModeProvider>
     </SafeAreaProvider>
@@ -53,7 +69,24 @@ function ThemedNavigation({ children }: PropsWithChildren) {
 }
 
 function AppSessionGate() {
-  const { session } = useSession();
+  const { session, status } = useSession();
+  const theme = useTheme();
+
+  // Đang khôi phục phiên từ secure store — chưa biết vào đâu.
+  if (status === "loading") {
+    return (
+      <View
+        style={{
+          flex: 1,
+          alignItems: "center",
+          justifyContent: "center",
+          backgroundColor: theme.background,
+        }}
+      >
+        <ActivityIndicator size="large" color={theme.primary} />
+      </View>
+    );
+  }
 
   if (!session) {
     return <Slot />;

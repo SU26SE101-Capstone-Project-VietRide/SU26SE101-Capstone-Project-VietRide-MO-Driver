@@ -31,6 +31,7 @@ yarn-error.*
 *.pem
 
 # local env files
+.env
 .env*.local
 
 # typescript
@@ -45,3 +46,6 @@ example
 /AGENTS.md
 /CLAUDE.md
 /SU26SE101_VIETRIDE_technical_context_v7.md
+
+# docs (nội bộ, không đẩy lên repo)
+/docs

@@ -22,7 +22,6 @@ import {
 } from "@/features/operations/ui";
 import {
     getHomeHrefForRole,
-    SAMPLE_CREW_ACCOUNTS,
     useAuthenticatedSession,
     useSession,
 } from "@/features/session/session-context";
@@ -34,52 +33,36 @@ export function LoginScreen() {
   const theme = useTheme();
   const styles = useThemedStyles(makeStyles);
   const insets = useSafeAreaInsets();
-  const { isAuthenticated, login, loginAs, role } = useSession();
+  const { isAuthenticated, login, role } = useSession();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [submitting, setSubmitting] = useState(false);
 
   if (isAuthenticated) {
     return <Redirect href={getHomeHrefForRole(role)} />;
   }
 
-  const handleLogin = () => {
-    setErrorMessage(null);
-
-    const result = login(email, password);
-
-    if (!result.ok) {
-      setErrorMessage(result.error);
-      return;
-    }
-
-    router.replace(getHomeHrefForRole(result.session.role));
-  };
-
-  const handleQuickLogin = (accountId: string) => {
-    const nextSession = loginAs(accountId);
-
-    if (!nextSession) {
-      setErrorMessage("Không tìm thấy tài khoản mẫu tương ứng.");
+  const handleLogin = async () => {
+    if (submitting) {
       return;
     }
 
     setErrorMessage(null);
-    router.replace(getHomeHrefForRole(nextSession.role));
-  };
+    setSubmitting(true);
 
-  const seedCredentials = (accountId: string) => {
-    const matchedAccount = SAMPLE_CREW_ACCOUNTS.find(
-      (account) => account.accountId === accountId,
-    );
+    try {
+      const result = await login(email, password);
 
-    if (!matchedAccount) {
-      return;
+      if (!result.ok) {
+        setErrorMessage(result.error);
+        return;
+      }
+
+      router.replace(getHomeHrefForRole(result.session.role));
+    } finally {
+      setSubmitting(false);
     }
-
-    setEmail(matchedAccount.email);
-    setPassword(matchedAccount.password);
-    setErrorMessage(null);
   };
 
   return (
@@ -100,8 +83,7 @@ export function LoginScreen() {
           <Text style={styles.pageEyebrow}>VietRide Crew Access</Text>
           <Text style={styles.pageTitle}>Đăng nhập điều hành chuyến</Text>
           <Text style={styles.pageSubtitle}>
-            Đăng nhập bằng tài khoản mẫu của tài xế hoặc phụ xe, có thể đăng xuất
-            để đổi vai trò ngay trong app.
+            Đăng nhập bằng tài khoản tài xế hoặc phụ xe do nhà xe cấp.
           </Text>
         </View>
 
@@ -115,7 +97,7 @@ export function LoginScreen() {
                 autoCapitalize="none"
                 autoCorrect={false}
                 keyboardType="email-address"
-                placeholder="driver.minhquan@vietride.vn"
+                placeholder="email@nhaxe.vn"
                 placeholderTextColor={theme.placeholder}
                 style={styles.input}
                 value={email}
@@ -128,7 +110,7 @@ export function LoginScreen() {
               <TextInput
                 autoCapitalize="none"
                 autoCorrect={false}
-                placeholder="Driver@123"
+                placeholder="••••••••"
                 placeholderTextColor={theme.placeholder}
                 secureTextEntry
                 style={styles.input}
@@ -147,63 +129,11 @@ export function LoginScreen() {
 
           <View style={styles.actionRow}>
             <ActionButton
-              label="Đăng nhập"
+              label={submitting ? "Đang đăng nhập…" : "Đăng nhập"}
               tone="primary"
-              onPress={handleLogin}
+              disabled={submitting}
+              onPress={() => void handleLogin()}
             />
-          </View>
-        </SurfaceCard>
-
-        <SurfaceCard delay={120}>
-          <SectionTitle
-            title="Tài khoản mẫu"
-            subtitle="Điền sẵn thông tin hoặc đăng nhập nhanh để đổi giữa 2 vai trò."
-          />
-
-          <View style={styles.accountList}>
-            {SAMPLE_CREW_ACCOUNTS.map((account) => (
-              <View key={account.accountId} style={styles.accountCard}>
-                <View style={styles.accountHeader}>
-                  <View style={styles.accountCopy}>
-                    <Text style={styles.accountName}>
-                      {account.displayName}
-                    </Text>
-                    <Text style={styles.accountMeta}>
-                      {account.operatorName}
-                    </Text>
-                  </View>
-                  <StatusChip
-                    label={account.role === "DRIVER" ? "Tài xế" : "Phụ xe"}
-                    tone={account.role === "DRIVER" ? "primary" : "info"}
-                  />
-                </View>
-
-                <View style={styles.credentialWrap}>
-                  <Text style={styles.credentialLabel}>Email</Text>
-                  <Text style={styles.credentialValue}>{account.email}</Text>
-                </View>
-
-                <View style={styles.credentialWrap}>
-                  <Text style={styles.credentialLabel}>Mật khẩu</Text>
-                  <Text style={styles.credentialValue}>{account.password}</Text>
-                </View>
-
-                <View style={styles.actionRow}>
-                  <ActionButton
-                    label="Điền sẵn"
-                    tone="secondary"
-                    small
-                    onPress={() => seedCredentials(account.accountId)}
-                  />
-                  <ActionButton
-                    label="Đăng nhập nhanh"
-                    tone="primary"
-                    small
-                    onPress={() => handleQuickLogin(account.accountId)}
-                  />
-                </View>
-              </View>
-            ))}
           </View>
         </SurfaceCard>
       </ScrollView>
@@ -221,21 +151,11 @@ export function CrewSettingsScreen() {
   const theme = useTheme();
   const styles = useThemedStyles(makeStyles);
   const { mode, setMode } = useThemeMode();
-  const { accounts, loginAs, logout } = useSession();
+  const { logout } = useSession();
   const { crewId, displayName, operatorName, role } = useAuthenticatedSession();
 
-  const handleSwitchAccount = (accountId: string) => {
-    const nextSession = loginAs(accountId);
-
-    if (!nextSession) {
-      return;
-    }
-
-    router.replace(getHomeHrefForRole(nextSession.role));
-  };
-
-  const handleLogout = () => {
-    logout();
+  const handleLogout = async () => {
+    await logout();
     router.replace("/login");
   };
 
@@ -251,7 +171,9 @@ export function CrewSettingsScreen() {
         <View style={styles.accountHeader}>
           <View style={styles.accountCopy}>
             <Text style={styles.accountName}>{displayName}</Text>
-            <Text style={styles.accountMeta}>{operatorName}</Text>
+            {operatorName ? (
+              <Text style={styles.accountMeta}>{operatorName}</Text>
+            ) : null}
           </View>
           <StatusChip
             label={role === "DRIVER" ? "Tài xế" : "Phụ xe"}
@@ -260,14 +182,16 @@ export function CrewSettingsScreen() {
         </View>
 
         <View style={styles.sessionSummary}>
-          <Text style={styles.sessionLine}>Mã nhân sự: {crewId}</Text>
+          <Text style={styles.sessionLine}>
+            Mã nhân sự: {crewId.slice(0, 8)}…
+          </Text>
         </View>
 
         <ActionButton
           icon="logout"
           label="Đăng xuất"
           tone="ghost"
-          onPress={handleLogout}
+          onPress={() => void handleLogout()}
         />
       </SurfaceCard>
 
@@ -327,57 +251,6 @@ export function CrewSettingsScreen() {
           />
         </SurfaceCard>
       ) : null}
-
-      <SurfaceCard delay={120}>
-        <SectionTitle
-          icon="swap-horiz"
-          title="Đổi tài khoản"
-          subtitle="Chuyển nhanh giữa các tài khoản mẫu."
-        />
-
-        <View style={styles.accountList}>
-          {accounts.map((account) => {
-            const isCurrentAccount = account.crewId === crewId;
-
-            return (
-              <View key={account.accountId} style={styles.accountCard}>
-                <View style={styles.accountHeader}>
-                  <View style={styles.accountCopy}>
-                    <Text style={styles.accountName}>
-                      {account.displayName}
-                    </Text>
-                    <Text style={styles.accountMeta}>{account.email}</Text>
-                  </View>
-                  <StatusChip
-                    label={account.role === "DRIVER" ? "Tài xế" : "Phụ xe"}
-                    tone={account.role === "DRIVER" ? "primary" : "info"}
-                  />
-                </View>
-
-                <View style={styles.rowBetween}>
-                  <Text style={styles.sessionLine}>{account.operatorName}</Text>
-                  {isCurrentAccount ? (
-                    <StatusChip label="Đang dùng" tone="success" />
-                  ) : null}
-                </View>
-
-                <View style={styles.actionRow}>
-                  <ActionButton
-                    label={
-                      isCurrentAccount
-                        ? "Đang đăng nhập"
-                        : "Chuyển sang tài khoản này"
-                    }
-                    tone={isCurrentAccount ? "ghost" : "primary"}
-                    small
-                    onPress={() => handleSwitchAccount(account.accountId)}
-                  />
-                </View>
-              </View>
-            );
-          })}
-        </View>
-      </SurfaceCard>
     </OperationsScreen>
   );
 }
@@ -476,17 +349,6 @@ const makeStyles = (c: Palette) =>
       flexWrap: "wrap",
       gap: Spacing.two,
     },
-    accountList: {
-      gap: Spacing.three,
-    },
-    accountCard: {
-      gap: Spacing.two,
-      borderRadius: 22,
-      borderWidth: 1,
-      borderColor: c.border,
-      backgroundColor: c.surface,
-      padding: Spacing.three,
-    },
     accountHeader: {
       flexDirection: "row",
       justifyContent: "space-between",
@@ -508,19 +370,6 @@ const makeStyles = (c: Palette) =>
       fontSize: 14,
       lineHeight: 20,
     },
-    credentialWrap: {
-      gap: 4,
-    },
-    credentialLabel: {
-      color: c.textSecondary,
-      fontFamily: Fonts.mono,
-      fontSize: 12,
-      textTransform: "uppercase",
-    },
-    credentialValue: {
-      color: c.text,
-      fontSize: 14,
-    },
     sessionSummary: {
       gap: Spacing.one,
     },
@@ -528,12 +377,6 @@ const makeStyles = (c: Palette) =>
       color: c.textMeta,
       fontSize: 14,
       lineHeight: 20,
-    },
-    rowBetween: {
-      flexDirection: "row",
-      justifyContent: "space-between",
-      gap: Spacing.two,
-      alignItems: "center",
     },
     segment: {
       flexDirection: "row",

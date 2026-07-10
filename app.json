@@ -1,23 +1,40 @@
 {
   "expo": {
-    "name": "my-app",
-    "slug": "my-app",
+    "name": "VietRide Driver",
+    "slug": "vietride-driver",
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/images/icon.png",
-    "scheme": "myapp",
+    "scheme": "vietride",
     "userInterfaceStyle": "automatic",
     "ios": {
-      "icon": "./assets/expo.icon"
+      "icon": "./assets/expo.icon",
+      "bundleIdentifier": "online.vietride.driver",
+      "associatedDomains": ["applinks:vietride.online"]
     },
     "android": {
+      "package": "online.vietride.driver",
       "adaptiveIcon": {
         "backgroundColor": "#E6F4FE",
         "foregroundImage": "./assets/images/android-icon-foreground.png",
         "backgroundImage": "./assets/images/android-icon-background.png",
         "monochromeImage": "./assets/images/android-icon-monochrome.png"
       },
-      "predictiveBackGestureEnabled": false
+      "predictiveBackGestureEnabled": false,
+      "intentFilters": [
+        {
+          "action": "VIEW",
+          "autoVerify": true,
+          "data": [
+            {
+              "scheme": "https",
+              "host": "vietride.online",
+              "pathPrefix": "/auth/set-password"
+            }
+          ],
+          "category": ["BROWSABLE", "DEFAULT"]
+        }
+      ]
     },
     "web": {
       "output": "static",
@@ -34,7 +51,9 @@
             "imageWidth": 76
           }
         }
-      ]
+      ],
+      "expo-secure-store",
+      "expo-image"
     ],
     "experiments": {
       "typedRoutes": true,
