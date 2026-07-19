@@ -17,6 +17,10 @@ import {
 import { ApiError, setOnSessionExpired } from "@/api/client";
 import type { AuthUser } from "@/api/types";
 import { type CrewRole } from "@/features/operations/mock-data";
+import {
+    registerPushToken,
+    unregisterPushToken,
+} from "@/features/notifications/push";
 
 export type CrewSession = {
   crewId: string;
@@ -95,6 +99,11 @@ export function SessionProvider({ children }: PropsWithChildren) {
         const nextSession = user ? toSession(user) : null;
         setSession(nextSession);
         setStatus(nextSession ? "signedIn" : "signedOut");
+
+        // Khôi phục phiên thành công → đăng ký lại device token (best-effort).
+        if (nextSession) {
+          void registerPushToken();
+        }
       })
       .catch(() => {
         if (!cancelled) {
@@ -137,6 +146,8 @@ export function SessionProvider({ children }: PropsWithChildren) {
         queryClient.clear();
         setSession(nextSession);
         setStatus("signedIn");
+        // Đăng ký device token nhận push (best-effort, không chặn đăng nhập).
+        void registerPushToken();
         return { ok: true, session: nextSession };
       } catch (error) {
         const message =
@@ -150,6 +161,8 @@ export function SessionProvider({ children }: PropsWithChildren) {
   );
 
   const logout = useCallback(async () => {
+    // Gỡ device token TRƯỚC khi apiLogout xóa access token (API cần auth).
+    await unregisterPushToken();
     await apiLogout();
     queryClient.clear();
     setSession(null);

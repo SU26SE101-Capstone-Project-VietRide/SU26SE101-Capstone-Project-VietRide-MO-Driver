@@ -49,3 +49,6 @@ example
 
 # docs (nội bộ, không đẩy lên repo)
 /docs
+# Firebase credentials (push) — không commit
+google-services.json
+GoogleService-Info.plist

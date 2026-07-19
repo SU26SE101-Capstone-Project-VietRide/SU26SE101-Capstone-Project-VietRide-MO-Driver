@@ -1,10 +1,14 @@
 import type { Tone } from "@/features/operations/mock-data";
 
+// Trip status theo doc §8: SCHEDULED, BOARDING, IN_PROGRESS, COMPLETED,
+// CANCELLED, DISRUPTED. Giữ UNKNOWN làm fallback phòng thủ.
 export type NormalizedTripStatus =
   | "IN_PROGRESS"
+  | "BOARDING"
   | "SCHEDULED"
   | "COMPLETED"
   | "CANCELLED"
+  | "DISRUPTED"
   | "UNKNOWN";
 
 export function isoDateOf(date: Date): string {
@@ -36,8 +40,17 @@ export function normalizeTripStatus(
     return "IN_PROGRESS";
   }
 
+  // Kiểm "boarding" trước "cancel/complete" vì là chuỗi riêng, tránh lọt UNKNOWN.
+  if (normalized.includes("boarding")) {
+    return "BOARDING";
+  }
+
   if (normalized.includes("cancel")) {
     return "CANCELLED";
+  }
+
+  if (normalized.includes("disrupt")) {
+    return "DISRUPTED";
   }
 
   if (normalized.includes("complete") || normalized.includes("finish")) {
@@ -58,10 +71,14 @@ export function tripStatusMeta(status: string | null | undefined): {
   switch (normalizeTripStatus(status)) {
     case "IN_PROGRESS":
       return { label: "Đang chạy", tone: "primary" };
+    case "BOARDING":
+      return { label: "Đang đón khách", tone: "primary" };
     case "COMPLETED":
       return { label: "Hoàn tất", tone: "success" };
     case "CANCELLED":
       return { label: "Đã hủy", tone: "danger" };
+    case "DISRUPTED":
+      return { label: "Gián đoạn", tone: "danger" };
     case "SCHEDULED":
       return { label: "Đã phân ca", tone: "info" };
     default:

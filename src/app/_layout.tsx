@@ -8,6 +8,7 @@ import {
 } from "react-native-safe-area-context";
 
 import { Colors } from "@/constants/theme";
+import { usePushNavigation } from "@/features/notifications/use-push-navigation";
 import { OperationsProvider } from "@/features/operations/operations-context";
 import {
     SessionProvider,
@@ -71,6 +72,9 @@ function ThemedNavigation({ children }: PropsWithChildren) {
 function AppSessionGate() {
   const { session, status } = useSession();
   const theme = useTheme();
+
+  // Bấm push → điều hướng theo data.type (chỉ chạy khi đã đăng nhập).
+  usePushNavigation();
 
   // Đang khôi phục phiên từ secure store — chưa biết vào đâu.
   if (status === "loading") {

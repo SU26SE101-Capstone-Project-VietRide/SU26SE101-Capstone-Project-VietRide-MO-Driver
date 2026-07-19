@@ -127,6 +127,9 @@ export type ApiRequestOptions = {
   body?: unknown;
   // false cho endpoint public (login…). Mặc định true: gắn Bearer token.
   auth?: boolean;
+  // Header tùy biến (vd Idempotency-Key cho mutation của Parcel).
+  // Ghi đè các header mặc định nếu trùng tên.
+  headers?: Record<string, string>;
 };
 
 export async function apiRequest<T>(
@@ -141,8 +144,12 @@ async function requestInternal<T>(
   options: ApiRequestOptions,
   isRetryAfterRefresh: boolean,
 ): Promise<T> {
-  const { auth = true, body, method = body !== undefined ? "POST" : "GET" } =
-    options;
+  const {
+    auth = true,
+    body,
+    method = body !== undefined ? "POST" : "GET",
+    headers: customHeaders,
+  } = options;
 
   const headers: Record<string, string> = { Accept: "application/json" };
 
@@ -155,6 +162,11 @@ async function requestInternal<T>(
     if (tokens) {
       headers.Authorization = `Bearer ${tokens.accessToken}`;
     }
+  }
+
+  // Header tùy biến ghi đè sau cùng (vd Idempotency-Key).
+  if (customHeaders) {
+    Object.assign(headers, customHeaders);
   }
 
   let response: Response;
@@ -182,6 +194,12 @@ async function requestInternal<T>(
     }
 
     return requestInternal<T>(path, options, true);
+  }
+
+  // 204 No Content: body rỗng, không có envelope để parse (vd mark-read).
+  // ApiResponseInterceptor của backend bỏ qua envelope cho status 204.
+  if (response.status === 204) {
+    return undefined as T;
   }
 
   const envelope = await parseEnvelope<T>(response);

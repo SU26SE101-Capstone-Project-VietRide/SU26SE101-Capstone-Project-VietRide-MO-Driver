@@ -21,13 +21,29 @@ import {
     NOTIFICATION_COLOR,
     NOTIFICATION_ICON,
 } from "@/features/operations/role-screens";
+import {
+    getHomeHrefForRole,
+    useSession,
+} from "@/features/session/session-context";
 import { useTheme, useThemedStyles } from "@/hooks/use-theme";
 
 const ALL_FILTER = "Tất cả";
 
 export default function NotificationsScreen() {
   const router = useRouter();
+  const { role } = useSession();
   const insets = useSafeAreaInsets();
+
+  // Màn Thông báo dùng chung, có thể được mở như route gốc (tap push notification,
+  // deep link) → khi đó stack không còn màn phía dưới. router.back() lúc này sẽ nổ
+  // "GO_BACK was not handled". Nên back có điều kiện: hết history thì về home theo role.
+  const handleBack = () => {
+    if (router.canGoBack()) {
+      router.back();
+    } else {
+      router.replace(getHomeHrefForRole(role));
+    }
+  };
   const theme = useTheme();
   const styles = useThemedStyles(makeStyles);
   const [page, setPage] = useState(1);
@@ -92,7 +108,7 @@ export default function NotificationsScreen() {
             accessibilityRole="button"
             accessibilityLabel="Quay lại"
             hitSlop={8}
-            onPress={() => router.back()}
+            onPress={handleBack}
             style={styles.iconButton}
           >
             <MaterialIcons name="arrow-back" size={22} color={theme.text} />

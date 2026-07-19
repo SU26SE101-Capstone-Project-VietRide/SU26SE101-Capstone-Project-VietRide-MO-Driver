@@ -10,10 +10,18 @@
     "ios": {
       "icon": "./assets/expo.icon",
       "bundleIdentifier": "online.vietride.driver",
-      "associatedDomains": ["applinks:vietride.online"]
+      "associatedDomains": [
+        "applinks:vietride.online"
+      ]
     },
     "android": {
       "package": "online.vietride.driver",
+      "googleServicesFile": "./google-services.json",
+      "config": {
+        "googleMaps": {
+          "apiKey": "AIzaSyDMrOCbRtvbs1VIpVBR5z8Smiy3ZbbBThg"
+        }
+      },
       "adaptiveIcon": {
         "backgroundColor": "#E6F4FE",
         "foregroundImage": "./assets/images/android-icon-foreground.png",
@@ -32,7 +40,10 @@
               "pathPrefix": "/auth/set-password"
             }
           ],
-          "category": ["BROWSABLE", "DEFAULT"]
+          "category": [
+            "BROWSABLE",
+            "DEFAULT"
+          ]
         }
       ]
     },
@@ -53,7 +64,15 @@
         }
       ],
       "expo-secure-store",
-      "expo-image"
+      "expo-image",
+      [
+        "expo-location",
+        {
+          "locationWhenInUsePermission": "VietRide Driver dùng vị trí để cập nhật hành trình chuyến xe cho hành khách theo dõi khi bạn đang chạy."
+        }
+      ],
+      "expo-notifications",
+      "expo-maps"
     ],
     "experiments": {
       "typedRoutes": true,

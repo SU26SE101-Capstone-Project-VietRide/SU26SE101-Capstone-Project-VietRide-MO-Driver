@@ -12,8 +12,15 @@ import {
 } from "react-native";
 
 import { ApiError } from "@/api/client";
-import { streamRagChat } from "@/api/rag";
-import type { SeatCell, TripDetails } from "@/api/types";
+import type { ReweighParcelInput } from "@/api/parcel";
+import { sendRagFeedback, streamRagChat } from "@/api/rag";
+import type {
+  AssistantParcelItem,
+  ParcelPaymentMethod,
+  RagRating,
+  SeatCell,
+  TripDetails,
+} from "@/api/types";
 import { EmptyCard, ErrorCard, LoadingCard } from "@/components/query-state";
 import { Fonts, Spacing, type Palette } from "@/constants/theme";
 import {
@@ -53,8 +60,48 @@ import {
     StatusChip,
     SurfaceCard,
 } from "@/features/operations/ui";
+import {
+  allowedParcelActions,
+  parcelStatusMeta,
+  sizeCategoryLabel,
+} from "@/features/parcels/parcel-format";
+import { TripRouteMap } from "@/features/routes/trip-route-map";
+import { useTripRoute } from "@/features/routes/use-route";
+import {
+  useAssistantTripParcels,
+  useConfirmParcelDelivery,
+  useReweighParcel,
+  useUnloadParcel,
+} from "@/features/parcels/use-parcels";
 import { useAuthenticatedSession } from "@/features/session/session-context";
+import {
+  TRACKING_ENABLED,
+  useGpsBroadcast,
+  type GpsBroadcastStatus,
+} from "@/features/tracking/use-gps-broadcast";
+import { useTripEta } from "@/features/tracking/use-tracking";
 import { useTheme, useThemedStyles } from "@/hooks/use-theme";
+
+// Nhãn + tone cho trạng thái phát GPS ở màn chuyến đang chạy.
+function gpsStatusMeta(status: GpsBroadcastStatus): {
+  label: string;
+  tone: Tone;
+} {
+  switch (status) {
+    case "tracking":
+      return { label: "Đang phát", tone: "success" };
+    case "connecting":
+      return { label: "Đang kết nối…", tone: "info" };
+    case "requesting-permission":
+      return { label: "Đang xin quyền…", tone: "info" };
+    case "denied":
+      return { label: "Chưa cấp quyền", tone: "danger" };
+    case "error":
+      return { label: "Lỗi kết nối", tone: "danger" };
+    default:
+      return { label: "Chưa bật", tone: "neutral" };
+  }
+}
 
 const INCIDENT_CATEGORIES = [
   "TRAFFIC_JAM",
@@ -79,6 +126,10 @@ type ChatMessage = {
   id: string;
   speaker: "user" | "assistant";
   text: string;
+  // ID message của trợ lý (từ event done) để gửi feedback; null với tin hệ thống.
+  assistantMessageId?: string;
+  // Rating đã gửi cho câu trả lời này (nếu có).
+  feedback?: RagRating;
 };
 
 // v1 chưa có tọa độ stop từ API → điều hướng theo tên trạm đích.
@@ -129,6 +180,7 @@ export function AssistantOverviewScreen() {
 export function DriverTripScreen() {
   const styles = useThemedStyles(makeStyles);
   const theme = useTheme();
+  const router = useRouter();
   const activeTrip = useActiveTrip();
   const detailsQuery = useTripDetails(activeTrip.trip?.tripId ?? null);
   const details = detailsQuery.data;
@@ -140,6 +192,22 @@ export function DriverTripScreen() {
   const nextStop = details?.stops
     .filter((stop) => new Date(stop.estimatedArrivalTime).getTime() > now)
     .sort((a, b) => a.orderIndex - b.orderIndex)[0];
+
+  const tripId = activeTrip.trip?.tripId ?? null;
+  // Chỉ phát GPS khi chuyến thực sự đang chạy/đón khách (foreground).
+  const tripRunning = useMemo(() => {
+    const status = normalizeTripStatus(activeTrip.trip?.status);
+    return status === "IN_PROGRESS" || status === "BOARDING";
+  }, [activeTrip.trip?.status]);
+  const routeQuery = useTripRoute(tripId);
+  const gps = useGpsBroadcast(tripId, tripRunning);
+  // ETA chỉ query khi tính năng tracking đã bật (production socket/REST sẵn sàng).
+  const etaQuery = useTripEta(
+    TRACKING_ENABLED ? tripId : null,
+    nextStop?.stopId ?? null,
+  );
+  const eta = etaQuery.data?.eta ?? null;
+  const gpsMeta = gpsStatusMeta(gps.status);
 
   return (
     <OperationsScreen
@@ -226,6 +294,58 @@ export function DriverTripScreen() {
               />
             ) : null}
           </SurfaceCard>
+
+          <SurfaceCard delay={20}>
+            <SectionTitle
+              icon="map"
+              title="Bản đồ tuyến"
+              subtitle="Đường đi và các điểm dừng của chuyến."
+            />
+            {routeQuery.isLoading ? (
+              <Text style={styles.metaText}>Đang tải bản đồ tuyến…</Text>
+            ) : routeQuery.isError ? (
+              <Text style={styles.metaText}>
+                Không tải được tuyến. Kéo xuống để thử lại.
+              </Text>
+            ) : routeQuery.data ? (
+              <TripRouteMap
+                route={routeQuery.data}
+                onPress={() => router.push("/route-map")}
+              />
+            ) : null}
+          </SurfaceCard>
+
+          {TRACKING_ENABLED ? (
+          <SurfaceCard delay={40}>
+            <SectionTitle
+              icon="my-location"
+              title="Định vị hành trình"
+              subtitle="Phát vị trí realtime cho hành khách theo dõi khi đang chạy."
+            />
+            <View style={styles.metricRow}>
+              <MetricTile
+                icon="gps-fixed"
+                value={gpsMeta.label}
+                hint="Phát vị trí"
+                tone={gpsMeta.tone}
+                compact
+              />
+              <MetricTile
+                icon="navigation"
+                value={eta ? `${eta.etaMinutes} phút` : "—"}
+                hint="Đến điểm dừng kế"
+                tone="primary"
+                compact
+              />
+            </View>
+            {gps.status === "denied" ? (
+              <Text style={styles.metaText}>
+                Chưa cấp quyền vị trí nên không thể phát hành trình. Vào Cài đặt để
+                cấp quyền vị trí cho VietRide Driver.
+              </Text>
+            ) : null}
+          </SurfaceCard>
+          ) : null}
 
           <TripStopsCard
             details={details}
@@ -656,226 +776,347 @@ function ApiSeatGrid({
 
 export function AssistantCargoScreen() {
   const styles = useThemedStyles(makeStyles);
-  const {
-    advanceParcelStatus,
-    cargoMetrics,
-    parcels,
-    settleAdditionalPayment,
-    weighParcel,
-  } = useOperations();
+  const activeTrip = useActiveTrip();
+  const tripId = activeTrip.trip?.tripId ?? null;
+  const parcelsQuery = useAssistantTripParcels(tripId);
+  const items = parcelsQuery.data?.items ?? [];
+
+  // Đếm nhanh theo trạng thái cho phần tóm tắt.
+  const loadedCount = items.filter((parcel) =>
+    ["LOADED", "IN_TRANSIT"].includes(parcel.status),
+  ).length;
+  const toDeliverCount = items.filter((parcel) =>
+    ["UNLOADED", "DELIVERED_PENDING_CONFIRM"].includes(parcel.status),
+  ).length;
 
   return (
     <OperationsScreen
       title="Hàng ký gửi"
-      subtitle="Nhận, dỡ và giao kiện hàng."
+      subtitle="Nhận, dỡ và giao kiện hàng của chuyến."
       headerRight={<NotificationBell />}
     >
-      <SurfaceCard accent delay={0}>
-        <View style={styles.metricRow}>
-          <MetricTile
-            icon="inventory-2"
-            value={String(cargoMetrics.loaded)}
-            hint="Đã nhận"
-            tone="success"
-            compact
-          />
-          <MetricTile
-            icon="file-download"
-            value={String(cargoMetrics.unloadNext)}
-            hint="Chờ dỡ"
-            tone="warning"
-            compact
-          />
-          <MetricTile
-            icon="scale"
-            value={`${cargoMetrics.capacityPct}%`}
-            hint="Tải trọng"
-            tone={cargoMetrics.capacityTone}
-            compact
-          />
-        </View>
+      {activeTrip.isLoading || (tripId && parcelsQuery.isLoading) ? (
+        <LoadingCard label="Đang tải kiện hàng…" />
+      ) : activeTrip.isError ? (
+        <ErrorCard onRetry={() => void activeTrip.refetch()} />
+      ) : !tripId ? (
+        <EmptyCard
+          icon="event-busy"
+          message="Chưa có chuyến đang chạy để xem kiện hàng."
+        />
+      ) : parcelsQuery.isError ? (
+        <ErrorCard onRetry={() => void parcelsQuery.refetch()} />
+      ) : items.length === 0 ? (
+        <EmptyCard
+          icon="inventory"
+          message="Chuyến này chưa có kiện hàng nào."
+        />
+      ) : (
+        <>
+          <SurfaceCard accent delay={0}>
+            <View style={styles.metricRow}>
+              <MetricTile
+                icon="inventory-2"
+                value={String(items.length)}
+                hint="Tổng kiện"
+                tone="info"
+                compact
+              />
+              <MetricTile
+                icon="local-shipping"
+                value={String(loadedCount)}
+                hint="Trên xe"
+                tone="success"
+                compact
+              />
+              <MetricTile
+                icon="file-download"
+                value={String(toDeliverCount)}
+                hint="Chờ giao"
+                tone="warning"
+                compact
+              />
+            </View>
+          </SurfaceCard>
 
-        {cargoMetrics.nearCapacity ? (
-          <View style={styles.feedbackBanner}>
-            <StatusChip label="Khoang gần đầy ≥80%" tone="danger" />
-            <Text style={styles.feedbackText}>
-              {cargoMetrics.onBoardWeightKg}/{cargoMetrics.maxCargoWeightKg}kg —
-              cân nhắc trước khi nhận thêm.
-            </Text>
-          </View>
-        ) : null}
-      </SurfaceCard>
-
-      <SurfaceCard delay={120}>
-        <SectionTitle icon="inventory" title="Danh sách kiện" />
-
-        <View style={styles.listStack}>
-          {parcels.map((parcel) => (
-            <ParcelCard
-              key={parcel.id}
-              parcel={parcel}
-              onWeigh={weighParcel}
-              onSettleAdditional={settleAdditionalPayment}
-              onAdvance={advanceParcelStatus}
-            />
-          ))}
-        </View>
-      </SurfaceCard>
+          <SurfaceCard delay={120}>
+            <SectionTitle icon="inventory" title="Danh sách kiện" />
+            <View style={styles.listStack}>
+              {items.map((parcel) => (
+                <ParcelCard
+                  key={parcel.parcelId}
+                  parcel={parcel}
+                  tripId={tripId}
+                />
+              ))}
+            </View>
+          </SurfaceCard>
+        </>
+      )}
     </OperationsScreen>
   );
 }
 
-const MAX_DELIVERY_PHOTOS = 3;
+const PARCEL_SIZE_OPTIONS: { value: string; label: string }[] = [
+  { value: "SMALL", label: "Nhỏ" },
+  { value: "MEDIUM", label: "Vừa" },
+  { value: "LARGE", label: "Lớn" },
+];
+
+const PARCEL_PAYMENT_OPTIONS: { value: ParcelPaymentMethod; label: string }[] = [
+  { value: "WALLET", label: "Ví" },
+  { value: "VNPAY", label: "VNPAY" },
+];
 
 function ParcelCard({
-  onAdvance,
-  onSettleAdditional,
-  onWeigh,
   parcel,
+  tripId,
 }: {
-  onAdvance: (parcelId: string) => void;
-  onSettleAdditional: (parcelId: string) => void;
-  onWeigh: (parcelId: string, actualWeightKg: number) => void;
-  parcel: ReturnType<typeof useOperations>["parcels"][number];
+  parcel: AssistantParcelItem;
+  tripId: string;
 }) {
   const styles = useThemedStyles(makeStyles);
   const theme = useTheme();
-  const [weightDraft, setWeightDraft] = useState("");
-  const [receiveScanned, setReceiveScanned] = useState(false);
-  const [deliveryScanned, setDeliveryScanned] = useState(false);
-  const [deliveryPhotoCount, setDeliveryPhotoCount] = useState(0);
-  const parsedWeight = Number(weightDraft.replace(",", "."));
-  const weightValid = Number.isFinite(parsedWeight) && parsedWeight > 0;
-  const isDeliveryStep = parcel.status === "UNLOADED";
-  const deliveryReady = deliveryScanned && deliveryPhotoCount > 0;
+  const statusMeta = parcelStatusMeta(parcel.status);
+  const actions = allowedParcelActions(parcel.status);
+
+  const reweigh = useReweighParcel(tripId);
+  const unload = useUnloadParcel(tripId);
+  const confirmDelivery = useConfirmParcelDelivery(tripId);
+
+  // Panel đang mở: cân lại / xác nhận giao / không.
+  const [mode, setMode] = useState<"none" | "reweigh" | "confirm">("none");
+  const [len, setLen] = useState("");
+  const [wid, setWid] = useState("");
+  const [hei, setHei] = useState("");
+  const [wgt, setWgt] = useState("");
+  const [size, setSize] = useState<string>(parcel.sizeCategory ?? "SMALL");
+  const [payment, setPayment] = useState<ParcelPaymentMethod>("WALLET");
+  const [note, setNote] = useState("");
+
+  const dims = [len, wid, hei, wgt].map((value) =>
+    Number(value.replace(",", ".")),
+  );
+  const reweighValid =
+    dims.every((n) => Number.isFinite(n) && n > 0) && size !== "";
+  const busy =
+    reweigh.isPending || unload.isPending || confirmDelivery.isPending;
+
+  const errorMessage =
+    reweigh.error instanceof ApiError
+      ? reweigh.error.message
+      : unload.error instanceof ApiError
+        ? unload.error.message
+        : confirmDelivery.error instanceof ApiError
+          ? confirmDelivery.error.message
+          : null;
+
+  const submitReweigh = () => {
+    const input: ReweighParcelInput = {
+      actualLengthCm: dims[0],
+      actualWidthCm: dims[1],
+      actualHeightCm: dims[2],
+      actualWeightKg: dims[3],
+      actualSizeCategory: size,
+      paymentMethod: payment,
+    };
+    reweigh.mutate(
+      { parcelId: parcel.parcelId, input },
+      { onSuccess: () => setMode("none") },
+    );
+  };
+
+  const submitConfirm = () => {
+    confirmDelivery.mutate(
+      { parcelId: parcel.parcelId, note: note.trim() },
+      { onSuccess: () => setMode("none") },
+    );
+  };
 
   return (
     <View style={styles.parcelCard}>
       <View style={styles.parcelHeader}>
         <View style={styles.parcelTitleStack}>
-          <Text style={styles.parcelCode}>{parcel.code}</Text>
+          <Text style={styles.parcelCode}>{parcel.parcelCode}</Text>
           <Text style={styles.parcelPeople}>
-            {parcel.senderName} → {parcel.recipientName}
+            {parcel.recipientName ?? "—"}
+            {parcel.recipientPhone ? ` • ${parcel.recipientPhone}` : ""}
           </Text>
         </View>
-        <StatusChip label={parcel.statusLabel} tone={parcel.tone} />
+        <StatusChip label={statusMeta.label} tone={statusMeta.tone} />
       </View>
 
       <View style={styles.metaStack}>
         <View style={styles.metaRow}>
-          <MaterialIcons name="place" size={15} color={theme.textSecondary} />
-          <Text style={styles.metaText}>
-            {parcel.pickupStopName} → {parcel.dropoffStopName}
-          </Text>
-        </View>
-        <View style={styles.metaRow}>
           <MaterialIcons name="scale" size={15} color={theme.textSecondary} />
           <Text style={styles.metaText}>
-            {parcel.estimatedWeightKg}kg
-            {parcel.actualWeightKg != null
-              ? ` → ${parcel.actualWeightKg}kg`
+            Kích cỡ {sizeCategoryLabel(parcel.sizeCategory)}
+            {parcel.estimatedWeightKg != null
+              ? ` • ~${parcel.estimatedWeightKg}kg`
               : ""}
           </Text>
         </View>
+        {parcel.description ? (
+          <View style={styles.metaRow}>
+            <MaterialIcons
+              name="description"
+              size={15}
+              color={theme.textSecondary}
+            />
+            <Text style={styles.metaText}>{parcel.description}</Text>
+          </View>
+        ) : null}
       </View>
 
-      {parcel.needsWeighing ? (
+      {errorMessage ? (
+        <Text style={styles.parcelHint}>{errorMessage}</Text>
+      ) : null}
+
+      {mode === "reweigh" ? (
         <View style={styles.weighStack}>
-          {receiveScanned ? (
-            <StatusChip
-              label={`Đã quét QR ${parcel.scanCode}`}
-              tone="success"
+          <View style={styles.dimRow}>
+            <TextInput
+              keyboardType="decimal-pad"
+              placeholder="Dài (cm)"
+              placeholderTextColor={theme.placeholder}
+              style={styles.dimInput}
+              value={len}
+              onChangeText={setLen}
             />
-          ) : (
+            <TextInput
+              keyboardType="decimal-pad"
+              placeholder="Rộng (cm)"
+              placeholderTextColor={theme.placeholder}
+              style={styles.dimInput}
+              value={wid}
+              onChangeText={setWid}
+            />
+            <TextInput
+              keyboardType="decimal-pad"
+              placeholder="Cao (cm)"
+              placeholderTextColor={theme.placeholder}
+              style={styles.dimInput}
+              value={hei}
+              onChangeText={setHei}
+            />
+            <TextInput
+              keyboardType="decimal-pad"
+              placeholder="Nặng (kg)"
+              placeholderTextColor={theme.placeholder}
+              style={styles.dimInput}
+              value={wgt}
+              onChangeText={setWgt}
+            />
+          </View>
+
+          <Text style={styles.parcelHint}>Kích cỡ thực tế</Text>
+          <View style={styles.segmentRow}>
+            {PARCEL_SIZE_OPTIONS.map((option) => (
+              <ActionButton
+                key={option.value}
+                label={option.label}
+                tone={size === option.value ? "primary" : "secondary"}
+                small
+                onPress={() => setSize(option.value)}
+              />
+            ))}
+          </View>
+
+          <Text style={styles.parcelHint}>Hình thức thu phụ phí (nếu có)</Text>
+          <View style={styles.segmentRow}>
+            {PARCEL_PAYMENT_OPTIONS.map((option) => (
+              <ActionButton
+                key={option.value}
+                label={option.label}
+                tone={payment === option.value ? "primary" : "secondary"}
+                small
+                onPress={() => setPayment(option.value)}
+              />
+            ))}
+          </View>
+
+          <View style={styles.segmentRow}>
             <ActionButton
-              label="Quét QR nhận kiện"
-              tone="secondary"
+              label={reweigh.isPending ? "Đang gửi…" : "Xác nhận cân lại"}
+              tone="primary"
               small
-              onPress={() => setReceiveScanned(true)}
+              disabled={busy || !reweighValid}
+              onPress={submitReweigh}
             />
-          )}
+            <ActionButton
+              label="Hủy"
+              tone="ghost"
+              small
+              disabled={busy}
+              onPress={() => setMode("none")}
+            />
+          </View>
+        </View>
+      ) : mode === "confirm" ? (
+        <View style={styles.weighStack}>
           <TextInput
-            editable={receiveScanned}
-            keyboardType="decimal-pad"
-            placeholder={`kg thực tế (ước lượng ${parcel.estimatedWeightKg}kg)`}
+            placeholder="Ghi chú giao hàng (bắt buộc)"
             placeholderTextColor={theme.placeholder}
             style={styles.weighInput}
-            value={weightDraft}
-            onChangeText={setWeightDraft}
+            value={note}
+            onChangeText={setNote}
           />
-          <ActionButton
-            label="Cân & nhận lên"
-            tone="primary"
-            small
-            disabled={!receiveScanned || !weightValid}
-            onPress={() => {
-              onWeigh(parcel.id, parsedWeight);
-              setWeightDraft("");
-            }}
-          />
-        </View>
-      ) : parcel.awaitingAdditionalPayment ? (
-        <View style={styles.weighStack}>
-          <Text style={styles.parcelHint}>
-            Vượt ước lượng — thu phụ phí trước khi nhận.
-          </Text>
-          <ActionButton
-            label="Đã thu phụ phí → nhận lên"
-            tone="primary"
-            small
-            onPress={() => onSettleAdditional(parcel.id)}
-          />
-        </View>
-      ) : isDeliveryStep ? (
-        <View style={styles.weighStack}>
-          {deliveryScanned ? (
-            <StatusChip label="Đã quét QR người nhận" tone="success" />
-          ) : (
+          <View style={styles.segmentRow}>
             <ActionButton
-              label="Quét QR người nhận"
+              label={confirmDelivery.isPending ? "Đang gửi…" : "Xác nhận giao"}
+              tone="primary"
+              small
+              disabled={busy || note.trim().length === 0}
+              onPress={submitConfirm}
+            />
+            <ActionButton
+              label="Hủy"
+              tone="ghost"
+              small
+              disabled={busy}
+              onPress={() => setMode("none")}
+            />
+          </View>
+        </View>
+      ) : (
+        <View style={styles.parcelActionStack}>
+          {actions.includes("reweigh") ? (
+            <ActionButton
+              icon="scale"
+              label="Cân lại"
               tone="secondary"
               small
-              onPress={() => setDeliveryScanned(true)}
+              disabled={busy}
+              onPress={() => setMode("reweigh")}
             />
-          )}
-          <ActionButton
-            label={`Chụp ảnh giao hàng (${deliveryPhotoCount}/${MAX_DELIVERY_PHOTOS})`}
-            tone="secondary"
-            small
-            disabled={deliveryPhotoCount >= MAX_DELIVERY_PHOTOS}
-            onPress={() =>
-              setDeliveryPhotoCount((current) =>
-                Math.min(current + 1, MAX_DELIVERY_PHOTOS),
-              )
-            }
-          />
-          <ActionButton
-            label={parcel.nextActionLabel ?? "Xác nhận giao hàng"}
-            tone="primary"
-            small
-            disabled={parcel.nextActionDisabled || !deliveryReady}
-            onPress={() => onAdvance(parcel.id)}
-          />
-          {!deliveryReady ? (
+          ) : null}
+          {actions.includes("unload") ? (
+            <ActionButton
+              icon="file-download"
+              label={unload.isPending ? "Đang dỡ…" : "Dỡ kiện"}
+              tone="primary"
+              small
+              disabled={busy}
+              onPress={() => unload.mutate(parcel.parcelId)}
+            />
+          ) : null}
+          {actions.includes("confirm-delivery") ? (
+            <ActionButton
+              icon="check-circle"
+              label="Xác nhận giao"
+              tone="primary"
+              small
+              disabled={busy}
+              onPress={() => setMode("confirm")}
+            />
+          ) : null}
+          {actions.length === 0 ? (
             <Text style={styles.parcelHint}>
-              Cần quét QR người nhận và tối thiểu 1 ảnh bằng chứng.
+              Không có thao tác cho trạng thái hiện tại.
             </Text>
           ) : null}
         </View>
-      ) : parcel.nextActionLabel ? (
-        <View style={styles.parcelActionStack}>
-          <ActionButton
-            label={parcel.nextActionLabel}
-            tone="primary"
-            small
-            disabled={parcel.nextActionDisabled}
-            onPress={() => onAdvance(parcel.id)}
-          />
-          {parcel.nextActionHint ? (
-            <Text style={styles.parcelHint}>{parcel.nextActionHint}</Text>
-          ) : null}
-        </View>
-      ) : null}
+      )}
     </View>
   );
 }
@@ -1033,6 +1274,17 @@ export function CrewSupportScreen() {
           if (typeof nextId === "string") {
             setConversationId(nextId);
           }
+          // Gắn assistantMessageId để bật nút đánh giá cho câu trả lời này.
+          const assistantMessageId = payload?.assistantMessageId;
+          if (typeof assistantMessageId === "string") {
+            setMessages((currentMessages) =>
+              currentMessages.map((message) =>
+                message.id === answerId
+                  ? { ...message, assistantMessageId }
+                  : message,
+              ),
+            );
+          }
         },
       });
     } catch (error) {
@@ -1048,6 +1300,31 @@ export function CrewSupportScreen() {
         currentMessages.map((message) =>
           message.id === answerId && message.text === ""
             ? { ...message, text: "Trợ lý chưa trả lời được câu này." }
+            : message,
+        ),
+      );
+    }
+  };
+
+  // Gửi đánh giá câu trả lời. Cập nhật lạc quan, revert nếu API lỗi.
+  const sendFeedback = async (
+    messageId: string,
+    assistantMessageId: string,
+    rating: RagRating,
+  ) => {
+    setMessages((currentMessages) =>
+      currentMessages.map((message) =>
+        message.id === messageId ? { ...message, feedback: rating } : message,
+      ),
+    );
+
+    try {
+      await sendRagFeedback(assistantMessageId, rating);
+    } catch {
+      setMessages((currentMessages) =>
+        currentMessages.map((message) =>
+          message.id === messageId
+            ? { ...message, feedback: undefined }
             : message,
         ),
       );
@@ -1107,6 +1384,64 @@ export function CrewSupportScreen() {
                 </Text>
               </View>
               <Text style={styles.messageText}>{message.text}</Text>
+              {message.speaker === "assistant" && message.assistantMessageId ? (
+                <View style={styles.feedbackRow}>
+                  <Pressable
+                    accessibilityRole="button"
+                    accessibilityLabel="Câu trả lời hữu ích"
+                    hitSlop={8}
+                    onPress={() =>
+                      void sendFeedback(
+                        message.id,
+                        message.assistantMessageId as string,
+                        1,
+                      )
+                    }
+                    style={styles.feedbackButton}
+                  >
+                    <MaterialIcons
+                      name={
+                        message.feedback === 1
+                          ? "thumb-up"
+                          : "thumb-up-off-alt"
+                      }
+                      size={16}
+                      color={
+                        message.feedback === 1
+                          ? theme.primary
+                          : theme.textSecondary
+                      }
+                    />
+                  </Pressable>
+                  <Pressable
+                    accessibilityRole="button"
+                    accessibilityLabel="Câu trả lời chưa tốt"
+                    hitSlop={8}
+                    onPress={() =>
+                      void sendFeedback(
+                        message.id,
+                        message.assistantMessageId as string,
+                        -1,
+                      )
+                    }
+                    style={styles.feedbackButton}
+                  >
+                    <MaterialIcons
+                      name={
+                        message.feedback === -1
+                          ? "thumb-down"
+                          : "thumb-down-off-alt"
+                      }
+                      size={16}
+                      color={
+                        message.feedback === -1
+                          ? theme.danger
+                          : theme.textSecondary
+                      }
+                    />
+                  </Pressable>
+                </View>
+              ) : null}
             </View>
           ))}
         </View>
@@ -1981,6 +2316,14 @@ const makeStyles = (c: Palette) =>
     padding: Spacing.three,
     gap: Spacing.two,
   },
+  feedbackRow: {
+    flexDirection: "row",
+    gap: Spacing.two,
+    marginTop: Spacing.one,
+  },
+  feedbackButton: {
+    padding: Spacing.one,
+  },
   feedbackText: {
     color: c.text,
     fontSize: 14,
@@ -2165,6 +2508,28 @@ const makeStyles = (c: Palette) =>
   },
   parcelActionStack: {
     gap: Spacing.one,
+  },
+  dimRow: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: Spacing.two,
+  },
+  dimInput: {
+    flexGrow: 1,
+    flexBasis: "47%",
+    minHeight: 48,
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: c.border,
+    backgroundColor: c.surfaceDeep,
+    paddingHorizontal: Spacing.three,
+    color: c.text,
+    fontSize: 15,
+  },
+  segmentRow: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: Spacing.two,
   },
   parcelHint: {
     color: "#FFD600",

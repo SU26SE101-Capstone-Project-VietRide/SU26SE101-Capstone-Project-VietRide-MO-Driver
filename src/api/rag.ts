@@ -1,8 +1,19 @@
 import { fetch } from "expo/fetch";
 
-import { API_BASE_URL, ApiError } from "./client";
+import { apiRequest, API_BASE_URL, ApiError } from "./client";
 import { getTokens } from "./token-storage";
-import type { Envelope } from "./types";
+import type { Envelope, RagFeedbackData, RagRating } from "./types";
+
+// Đánh giá 1 câu trả lời của trợ lý (assistantMessageId lấy từ event done).
+export function sendRagFeedback(
+  messageId: string,
+  rating: RagRating,
+): Promise<RagFeedbackData> {
+  return apiRequest<RagFeedbackData>(
+    `/v1/rag/messages/${messageId}/feedback`,
+    { method: "POST", body: { rating } },
+  );
+}
 
 export type RagChatParams = {
   message: string;
@@ -38,6 +49,24 @@ function extractTokenText(raw: string): string {
   return raw;
 }
 
+// Event error mang { code, message } theo doc — trích ra để giữ nguyên lỗi backend.
+function parseErrorPayload(raw: string): { code?: string; message?: string } {
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    if (parsed && typeof parsed === "object") {
+      const record = parsed as Record<string, unknown>;
+      return {
+        code: typeof record.code === "string" ? record.code : undefined,
+        message: typeof record.message === "string" ? record.message : undefined,
+      };
+    }
+  } catch {
+    // Không phải JSON — coi nguyên văn là message.
+    return { message: raw || undefined };
+  }
+  return {};
+}
+
 function parseDonePayload(raw: string): Record<string, unknown> | null {
   try {
     const parsed: unknown = JSON.parse(raw);
@@ -53,7 +82,7 @@ function parseDonePayload(raw: string): Record<string, unknown> | null {
 export async function streamRagChat(params: RagChatParams): Promise<void> {
   const tokens = await getTokens();
 
-  const response = await fetch(`${API_BASE_URL}/api/v1/rag/chat`, {
+  const response = await fetch(`${API_BASE_URL}/v1/rag/chat`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
@@ -109,9 +138,10 @@ export async function streamRagChat(params: RagChatParams): Promise<void> {
     } else if (eventName === "done") {
       params.onDone?.(parseDonePayload(data));
     } else if (eventName === "error") {
+      const err = parseErrorPayload(data);
       throw new ApiError({
-        code: "RAG_STREAM_ERROR",
-        message: extractTokenText(data) || "Trợ lý ảo gặp lỗi khi trả lời.",
+        code: err.code ?? "RAG_STREAM_ERROR",
+        message: err.message ?? "Trợ lý ảo gặp lỗi khi trả lời.",
         statusCode: 200,
       });
     }

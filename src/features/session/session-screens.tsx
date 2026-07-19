@@ -134,6 +134,12 @@ export function LoginScreen() {
               disabled={submitting}
               onPress={() => void handleLogin()}
             />
+            <ActionButton
+              label="Quên mật khẩu?"
+              tone="ghost"
+              disabled={submitting}
+              onPress={() => router.push("/auth/forgot-password")}
+            />
           </View>
         </SurfaceCard>
       </ScrollView>

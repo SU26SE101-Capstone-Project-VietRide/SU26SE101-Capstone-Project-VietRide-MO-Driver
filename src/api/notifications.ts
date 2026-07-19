@@ -24,14 +24,14 @@ export function listNotifications(
   // Không dùng query.size — polyfill URLSearchParams của RN chưa chắc có.
   const queryString = query.toString();
   const suffix = queryString ? `?${queryString}` : "";
-  return apiRequest<NotificationListData>(`/api/v1/notifications${suffix}`);
+  return apiRequest<NotificationListData>(`/v1/notifications${suffix}`);
 }
 
+// Mark đã đọc: POST /v1/notifications/:id/read, KHÔNG body, backend trả 204.
 export async function markNotificationRead(
   notificationId: string,
 ): Promise<void> {
-  await apiRequest<unknown>(`/api/v1/notifications/${notificationId}`, {
-    method: "PATCH",
-    body: { read: true },
+  await apiRequest<void>(`/v1/notifications/${notificationId}/read`, {
+    method: "POST",
   });
 }
