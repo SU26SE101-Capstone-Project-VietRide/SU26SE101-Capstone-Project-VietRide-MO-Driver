@@ -72,7 +72,14 @@
         }
       ],
       "expo-notifications",
-      "expo-maps"
+      "expo-maps",
+      [
+        "expo-camera",
+        {
+          "cameraPermission": "VietRide Driver dùng camera để quét mã QR trên vé của hành khách khi đón khách lên xe.",
+          "recordAudioAndroid": false
+        }
+      ]
     ],
     "experiments": {
       "typedRoutes": true,

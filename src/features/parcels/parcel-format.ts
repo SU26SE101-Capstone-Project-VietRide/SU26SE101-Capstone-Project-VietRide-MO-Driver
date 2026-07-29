@@ -1,6 +1,7 @@
 import type { Tone } from "@/features/operations/mock-data";
 
-// Backend trả status parcel dạng string (18 giá trị) → map defensive, có fallback.
+// Backend trả status parcel dạng string (22 giá trị, Settlement v2) → map
+// defensive, có fallback.
 export function parcelStatusMeta(status: string | null | undefined): {
   label: string;
   tone: Tone;
@@ -9,11 +10,19 @@ export function parcelStatusMeta(status: string | null | undefined): {
     case "PENDING_OPERATOR_REVIEW":
       return { label: "Chờ duyệt", tone: "info" };
     case "PENDING_PAYMENT":
-      return { label: "Chờ thanh toán", tone: "warning" };
+      return { label: "Chờ thanh toán cọc", tone: "warning" };
     case "PENDING":
       return { label: "Chờ xử lý", tone: "neutral" };
     case "PENDING_ADDITIONAL_PAYMENT":
       return { label: "Chờ phụ phí", tone: "warning" };
+    case "RESERVED":
+      return { label: "Đã cọc, chờ tới bến", tone: "info" };
+    case "CHECKED_IN":
+      return { label: "Đã nhận tại bến", tone: "info" };
+    case "PENDING_FINAL_PAYMENT":
+      return { label: "Chờ khách trả nốt", tone: "warning" };
+    case "READY_TO_LOAD":
+      return { label: "Sẵn sàng lên xe", tone: "success" };
     case "LOADED":
       return { label: "Đã lên xe", tone: "success" };
     case "IN_TRANSIT":
@@ -47,6 +56,17 @@ export function parcelStatusMeta(status: string | null | undefined): {
   }
 }
 
+// Tiền VND từ backend là số nguyên đồng → "2.700 đ". Null/NaN trả "—".
+export function formatVnd(amount: number | null | undefined): string {
+  if (amount == null || !Number.isFinite(amount)) {
+    return "—";
+  }
+  const grouped = Math.round(amount)
+    .toString()
+    .replace(/\B(?=(\d{3})+(?!\d))/g, ".");
+  return `${grouped} đ`;
+}
+
 export function sizeCategoryLabel(size: string | null | undefined): string {
   switch (size) {
     case "SMALL":
@@ -64,23 +84,40 @@ export function sizeCategoryLabel(size: string | null | undefined): string {
 
 // Thao tác Assistant được phép theo trạng thái. Backend vẫn là source of truth
 // (trả INVALID_STATUS nếu sai), đây chỉ để hiển thị đúng nút.
-export type ParcelAction = "reweigh" | "unload" | "confirm-delivery";
+// Chuỗi Settlement v2:
+// RESERVED -> check-in -> CHECKED_IN -> reweigh -> PENDING_FINAL_PAYMENT
+//   (khách trả nốt) -> READY_TO_LOAD -> load -> LOADED -> (chuyến chạy)
+//   -> IN_TRANSIT -> unload -> UNLOADED -> deliver -> DELIVERED_PENDING_CONFIRM
+//   -> confirm-delivery -> DELIVERY_CONFIRMED
+// Reweigh đủ tiền/thừa cọc thì nhảy thẳng CHECKED_IN -> READY_TO_LOAD.
+export type ParcelAction =
+  | "check-in"
+  | "reweigh"
+  | "load"
+  | "unload"
+  | "deliver"
+  | "confirm-delivery";
 
 export function allowedParcelActions(
   status: string | null | undefined,
 ): ParcelAction[] {
   switch (status) {
-    case "PENDING":
-    case "PENDING_ADDITIONAL_PAYMENT":
+    case "RESERVED":
+      return ["check-in"];
+    case "CHECKED_IN":
       return ["reweigh"];
-    case "LOADED":
-      return ["reweigh", "unload"];
+    case "READY_TO_LOAD":
+      return ["load"];
     case "IN_TRANSIT":
       return ["unload"];
     case "UNLOADED":
+      return ["deliver"];
     case "DELIVERED_PENDING_CONFIRM":
       return ["confirm-delivery"];
     default:
+      // PENDING_FINAL_PAYMENT chờ khách trả qua app khách — Assistant không có
+      // thao tác. PENDING/PENDING_ADDITIONAL_PAYMENT là legacy đã được BE
+      // migrate sang status v2, không còn thao tác trực tiếp.
       return [];
   }
 }

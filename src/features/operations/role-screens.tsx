@@ -14,15 +14,18 @@ import {
 import { ApiError } from "@/api/client";
 import type { ReweighParcelInput } from "@/api/parcel";
 import { sendRagFeedback, streamRagChat } from "@/api/rag";
-import type {
-  AssistantParcelItem,
-  ParcelPaymentMethod,
-  RagRating,
-  SeatCell,
-  TripDetails,
+import {
+  INCIDENT_CATEGORIES,
+  type AssistantParcelItem,
+  type IncidentCategory,
+  type RagRating,
+  type ReportIncidentData,
+  type SeatCell,
+  type TripDetails,
 } from "@/api/types";
 import { EmptyCard, ErrorCard, LoadingCard } from "@/components/query-state";
 import { Fonts, Spacing, type Palette } from "@/constants/theme";
+import { QrScannerModal } from "@/features/boarding/qr-scanner";
 import {
     groupManifestByBooking,
     isBoardedStatus,
@@ -33,10 +36,7 @@ import {
     type ScheduleEntry,
     type Tone,
 } from "@/features/operations/mock-data";
-import {
-    SUPPORT_QUICK_PROMPTS,
-    useOperations,
-} from "@/features/operations/operations-context";
+import { SUPPORT_QUICK_PROMPTS } from "@/features/operations/operations-context";
 import { useUnreadNotificationsCount } from "@/features/notifications/use-notifications";
 import {
     formatTimeHM,
@@ -62,6 +62,7 @@ import {
 } from "@/features/operations/ui";
 import {
   allowedParcelActions,
+  formatVnd,
   parcelStatusMeta,
   sizeCategoryLabel,
 } from "@/features/parcels/parcel-format";
@@ -69,11 +70,24 @@ import { TripRouteMap } from "@/features/routes/trip-route-map";
 import { useTripRoute } from "@/features/routes/use-route";
 import {
   useAssistantTripParcels,
+  useCheckInParcel,
   useConfirmParcelDelivery,
+  useDeliverParcel,
+  useLoadParcel,
   useReweighParcel,
   useUnloadParcel,
 } from "@/features/parcels/use-parcels";
 import { useAuthenticatedSession } from "@/features/session/session-context";
+import {
+  firstErrorMessage,
+  tripOpsErrorMessage,
+} from "@/features/trip-ops/trip-ops-errors";
+import {
+  getCurrentCoords,
+  useArriveAtDestination,
+  useArriveAtStop,
+  useReportIncident,
+} from "@/features/trip-ops/use-trip-ops";
 import {
   TRACKING_ENABLED,
   useGpsBroadcast,
@@ -103,16 +117,8 @@ function gpsStatusMeta(status: GpsBroadcastStatus): {
   }
 }
 
-const INCIDENT_CATEGORIES = [
-  "TRAFFIC_JAM",
-  "VEHICLE_BREAKDOWN",
-  "ACCIDENT",
-  "WEATHER",
-  "OTHER",
-] as const;
-
 const INCIDENT_CATEGORY_META: Record<
-  (typeof INCIDENT_CATEGORIES)[number],
+  IncidentCategory,
   { label: string; icon: ComponentProps<typeof MaterialIcons>["name"] }
 > = {
   TRAFFIC_JAM: { label: "Kẹt xe", icon: "traffic" },
@@ -186,12 +192,16 @@ export function DriverTripScreen() {
   const details = detailsQuery.data;
 
   const statusMeta = tripStatusMeta(activeTrip.trip?.status);
-  // Điểm dừng kế tiếp = stop có ETA gần nhất còn ở tương lai.
-  // Chốt "bây giờ" theo lần data đổi để không gọi impure Date.now() khi render.
-  const now = useMemo(() => new Date().getTime(), []);
-  const nextStop = details?.stops
-    .filter((stop) => new Date(stop.estimatedArrivalTime).getTime() > now)
-    .sort((a, b) => a.orderIndex - b.orderIndex)[0];
+  // Điểm dừng kế tiếp = stop PENDING đầu tiên theo thứ tự tuyến.
+  // Dùng status thay vì so ETA với giờ hiện tại: xe chạy trễ thì ETA đã thành
+  // quá khứ nhưng stop vẫn chưa tới, so theo giờ sẽ bỏ sót điểm đó.
+  const nextStop = useMemo(
+    () =>
+      details?.stops
+        .filter((stop) => stop.status === "PENDING")
+        .sort((a, b) => a.orderIndex - b.orderIndex)[0],
+    [details],
+  );
 
   const tripId = activeTrip.trip?.tripId ?? null;
   // Chỉ phát GPS khi chuyến thực sự đang chạy/đón khách (foreground).
@@ -357,8 +367,6 @@ export function DriverTripScreen() {
   );
 }
 
-const MAX_INCIDENT_PHOTOS = 3;
-
 export function DriverIncidentScreen() {
   return (
     <IncidentReportScreen subtitle="Gửi sự cố, tai nạn về điều hành ngay trên xe." />
@@ -385,12 +393,43 @@ function IncidentReportScreen({
 }) {
   const styles = useThemedStyles(makeStyles);
   const theme = useTheme();
-  const { currentStop } = useOperations();
+  const activeTrip = useActiveTrip();
+  const tripId = activeTrip.trip?.tripId ?? null;
+  const details = useTripDetails(tripId).data;
+  const incident = useReportIncident(tripId);
+
   const [incidentCategory, setIncidentCategory] =
-    useState<(typeof INCIDENT_CATEGORIES)[number]>("TRAFFIC_JAM");
+    useState<IncidentCategory>("TRAFFIC_JAM");
   const [incidentDescription, setIncidentDescription] = useState("");
-  const [photoCount, setPhotoCount] = useState(0);
-  const [incidentSubmitted, setIncidentSubmitted] = useState(false);
+  const [submitted, setSubmitted] = useState<ReportIncidentData | null>(null);
+
+  const errorMessage = tripOpsErrorMessage(incident.error);
+  const tripRunning =
+    normalizeTripStatus(activeTrip.trip?.status) === "IN_PROGRESS";
+
+  const submit = async () => {
+    if (!tripId) {
+      return;
+    }
+
+    // Toạ độ là best-effort: không có quyền vị trí vẫn phải gửi được sự cố.
+    const coords = await getCurrentCoords();
+    const description = incidentDescription.trim();
+
+    incident.mutate(
+      {
+        category: incidentCategory,
+        description: description.length > 0 ? description : null,
+        ...(coords ?? {}),
+      },
+      {
+        onSuccess: (data) => {
+          setSubmitted(data);
+          setIncidentDescription("");
+        },
+      },
+    );
+  };
 
   return (
     <OperationsScreen
@@ -402,11 +441,16 @@ function IncidentReportScreen({
       <SurfaceCard accent delay={0}>
         <SectionTitle
           icon="location-on"
-          title="Vị trí hiện tại"
-          subtitle={`${currentStop.name} • ${currentStop.zone}`}
+          title="Chuyến đang chạy"
+          subtitle={
+            details?.originStation?.name && details?.destinationStation?.name
+              ? `${details.originStation.name} → ${details.destinationStation.name}`
+              : "Chưa có chuyến đang chạy"
+          }
         />
         <Text style={styles.metaText}>
-          Báo cáo sẽ tự động đính kèm vị trí và thông tin chuyến.
+          Báo cáo gửi kèm vị trí hiện tại nếu bạn đã cấp quyền định vị. Điều hành
+          nhận được ngay, chuyến không bị đổi trạng thái.
         </Text>
       </SurfaceCard>
 
@@ -437,41 +481,37 @@ function IncidentReportScreen({
           onChangeText={setIncidentDescription}
         />
 
-        <View style={styles.actionRow}>
-          <ActionButton
-            icon="photo-camera"
-            label={`Đính kèm ảnh (${photoCount}/${MAX_INCIDENT_PHOTOS})`}
-            tone="secondary"
-            disabled={photoCount >= MAX_INCIDENT_PHOTOS}
-            onPress={() =>
-              setPhotoCount((current) =>
-                Math.min(current + 1, MAX_INCIDENT_PHOTOS),
-              )
-            }
-          />
-          {photoCount > 0 ? (
-            <ActionButton
-              icon="delete"
-              label="Xóa ảnh"
-              tone="ghost"
-              onPress={() => setPhotoCount(0)}
-            />
-          ) : null}
-        </View>
-
         <ActionButton
           icon="send"
-          label="Gửi báo cáo"
+          label={incident.isPending ? "Đang gửi…" : "Gửi báo cáo"}
           tone="danger"
-          onPress={() => setIncidentSubmitted(true)}
+          disabled={!tripId || !tripRunning || incident.isPending}
+          onPress={() => void submit()}
         />
 
-        {incidentSubmitted ? (
+        {!tripId ? (
+          <Text style={styles.metaText}>
+            Chưa có chuyến nào đang chạy để báo sự cố.
+          </Text>
+        ) : !tripRunning ? (
+          <Text style={styles.metaText}>
+            Chỉ báo được sự cố khi chuyến đang chạy.
+          </Text>
+        ) : null}
+
+        {errorMessage ? (
+          <Text style={styles.errorText}>{errorMessage}</Text>
+        ) : null}
+
+        {submitted ? (
           <View style={styles.scanBanner}>
             <StatusChip label="Đã gửi báo cáo" tone="success" />
             <Text style={styles.feedbackText}>
-              Đã ghi nhận: {INCIDENT_CATEGORY_META[incidentCategory].label} •{" "}
-              {photoCount} ảnh • vị trí {currentStop.shortName}.
+              {INCIDENT_CATEGORY_META[submitted.category].label} • lúc{" "}
+              {formatTimeHM(submitted.reportedAt)}
+              {submitted.latitude != null && submitted.longitude != null
+                ? " • đã đính kèm vị trí"
+                : " • không có vị trí"}
             </Text>
           </View>
         ) : null}
@@ -492,6 +532,7 @@ export function AssistantBoardingScreen() {
   const qrScan = useQrScanMutation(tripId);
   const [codeDraft, setCodeDraft] = useState("");
   const [scanResult, setScanResult] = useState<ScanResult | null>(null);
+  const [scannerOpen, setScannerOpen] = useState(false);
 
   const items = useMemo(
     () => manifestQuery.data?.items ?? [],
@@ -596,7 +637,15 @@ export function AssistantBoardingScreen() {
             <SectionTitle
               icon="qr-code-scanner"
               title="Check-in bằng mã vé"
-              subtitle="Nhập mã booking trên vé QR của khách."
+              subtitle="Quét QR trên vé của khách, hoặc nhập mã thủ công."
+            />
+
+            <ActionButton
+              icon="qr-code-scanner"
+              label={qrScan.isPending ? "Đang xử lý…" : "Quét QR bằng camera"}
+              tone="primary"
+              disabled={qrScan.isPending}
+              onPress={() => setScannerOpen(true)}
             />
 
             <View style={styles.composerRow}>
@@ -619,6 +668,17 @@ export function AssistantBoardingScreen() {
                 onPress={() => handleCheckIn(codeDraft)}
               />
             </View>
+
+            <QrScannerModal
+              visible={scannerOpen}
+              title="Quét vé của khách"
+              hint="Đưa mã QR trên vé vào giữa khung."
+              onScanned={(code) => {
+                setScannerOpen(false);
+                handleCheckIn(code);
+              }}
+              onClose={() => setScannerOpen(false)}
+            />
 
             {scanResult ? (
               <View
@@ -777,7 +837,18 @@ function ApiSeatGrid({
 export function AssistantCargoScreen() {
   const styles = useThemedStyles(makeStyles);
   const activeTrip = useActiveTrip();
-  const tripId = activeTrip.trip?.tripId ?? null;
+  // Phụ xe có thể chạy nhiều ca/ngày, và kiện của ca sau phải được check-in
+  // TRƯỚC giờ khởi hành (khi ca khác có thể đang active) → cho chọn chuyến
+  // thay vì khóa cứng vào chuyến active. Mặc định vẫn là chuyến active.
+  const today = isoDateOf(new Date());
+  const scheduleQuery = useDriverSchedule(today, today);
+  const todayTrips = scheduleQuery.data?.trips ?? [];
+  const [selectedTripId, setSelectedTripId] = useState<string | null>(null);
+  const tripId =
+    selectedTripId ??
+    activeTrip.trip?.tripId ??
+    todayTrips[0]?.tripId ??
+    null;
   const parcelsQuery = useAssistantTripParcels(tripId);
   const items = parcelsQuery.data?.items ?? [];
 
@@ -806,13 +877,36 @@ export function AssistantCargoScreen() {
         />
       ) : parcelsQuery.isError ? (
         <ErrorCard onRetry={() => void parcelsQuery.refetch()} />
-      ) : items.length === 0 ? (
-        <EmptyCard
-          icon="inventory"
-          message="Chuyến này chưa có kiện hàng nào."
-        />
       ) : (
         <>
+          {todayTrips.length > 1 ? (
+            <SurfaceCard delay={0}>
+              <SectionTitle
+                icon="alt-route"
+                title="Chọn chuyến"
+                subtitle="Kiện của ca sau cần nhận tại bến trước giờ chạy."
+              />
+              <View style={styles.segmentRow}>
+                {todayTrips.map((trip) => (
+                  <ActionButton
+                    key={trip.tripId}
+                    label={`${formatTimeHM(trip.departureDateTime)} • ${tripStatusMeta(trip.status).label}`}
+                    tone={trip.tripId === tripId ? "primary" : "secondary"}
+                    small
+                    onPress={() => setSelectedTripId(trip.tripId)}
+                  />
+                ))}
+              </View>
+            </SurfaceCard>
+          ) : null}
+
+          {items.length === 0 ? (
+            <EmptyCard
+              icon="inventory"
+              message="Chuyến này chưa có kiện hàng nào."
+            />
+          ) : (
+            <>
           <SurfaceCard accent delay={0}>
             <View style={styles.metricRow}>
               <MetricTile
@@ -851,22 +945,13 @@ export function AssistantCargoScreen() {
               ))}
             </View>
           </SurfaceCard>
+            </>
+          )}
         </>
       )}
     </OperationsScreen>
   );
 }
-
-const PARCEL_SIZE_OPTIONS: { value: string; label: string }[] = [
-  { value: "SMALL", label: "Nhỏ" },
-  { value: "MEDIUM", label: "Vừa" },
-  { value: "LARGE", label: "Lớn" },
-];
-
-const PARCEL_PAYMENT_OPTIONS: { value: ParcelPaymentMethod; label: string }[] = [
-  { value: "WALLET", label: "Ví" },
-  { value: "VNPAY", label: "VNPAY" },
-];
 
 function ParcelCard({
   parcel,
@@ -880,8 +965,11 @@ function ParcelCard({
   const statusMeta = parcelStatusMeta(parcel.status);
   const actions = allowedParcelActions(parcel.status);
 
+  const checkIn = useCheckInParcel(tripId);
   const reweigh = useReweighParcel(tripId);
+  const load = useLoadParcel(tripId);
   const unload = useUnloadParcel(tripId);
+  const deliver = useDeliverParcel(tripId);
   const confirmDelivery = useConfirmParcelDelivery(tripId);
 
   // Panel đang mở: cân lại / xác nhận giao / không.
@@ -890,26 +978,29 @@ function ParcelCard({
   const [wid, setWid] = useState("");
   const [hei, setHei] = useState("");
   const [wgt, setWgt] = useState("");
-  const [size, setSize] = useState<string>(parcel.sizeCategory ?? "SMALL");
-  const [payment, setPayment] = useState<ParcelPaymentMethod>("WALLET");
   const [note, setNote] = useState("");
 
   const dims = [len, wid, hei, wgt].map((value) =>
     Number(value.replace(",", ".")),
   );
-  const reweighValid =
-    dims.every((n) => Number.isFinite(n) && n > 0) && size !== "";
+  // Settlement v2: chỉ cần 4 số đo; backend tự suy size và tính giá cuối.
+  const reweighValid = dims.every((n) => Number.isFinite(n) && n > 0);
   const busy =
-    reweigh.isPending || unload.isPending || confirmDelivery.isPending;
+    checkIn.isPending ||
+    reweigh.isPending ||
+    load.isPending ||
+    unload.isPending ||
+    deliver.isPending ||
+    confirmDelivery.isPending;
 
-  const errorMessage =
-    reweigh.error instanceof ApiError
-      ? reweigh.error.message
-      : unload.error instanceof ApiError
-        ? unload.error.message
-        : confirmDelivery.error instanceof ApiError
-          ? confirmDelivery.error.message
-          : null;
+  const errorMessage = firstErrorMessage(
+    checkIn.error,
+    reweigh.error,
+    load.error,
+    unload.error,
+    deliver.error,
+    confirmDelivery.error,
+  );
 
   const submitReweigh = () => {
     const input: ReweighParcelInput = {
@@ -917,8 +1008,6 @@ function ParcelCard({
       actualWidthCm: dims[1],
       actualHeightCm: dims[2],
       actualWeightKg: dims[3],
-      actualSizeCategory: size,
-      paymentMethod: payment,
     };
     reweigh.mutate(
       { parcelId: parcel.parcelId, input },
@@ -950,12 +1039,31 @@ function ParcelCard({
         <View style={styles.metaRow}>
           <MaterialIcons name="scale" size={15} color={theme.textSecondary} />
           <Text style={styles.metaText}>
-            Kích cỡ {sizeCategoryLabel(parcel.sizeCategory)}
-            {parcel.estimatedWeightKg != null
-              ? ` • ~${parcel.estimatedWeightKg}kg`
-              : ""}
+            Kích cỡ{" "}
+            {sizeCategoryLabel(
+              parcel.actualSizeCategory ?? parcel.sizeCategory,
+            )}
+            {parcel.actualWeightKg != null
+              ? ` • ${parcel.actualWeightKg}kg thực tế`
+              : parcel.estimatedWeightKg != null
+                ? ` • ~${parcel.estimatedWeightKg}kg`
+                : ""}
           </Text>
         </View>
+        {parcel.status === "PENDING_FINAL_PAYMENT" ? (
+          <View style={styles.metaRow}>
+            <MaterialIcons name="payments" size={15} color={theme.textSecondary} />
+            <Text style={styles.metaText}>
+              Khách còn thiếu{" "}
+              {formatVnd(
+                (parcel.balanceRequiredVnd ?? 0) - (parcel.balancePaidVnd ?? 0),
+              )}
+              {parcel.finalPaymentDeadline
+                ? ` • hạn ${formatTimeHM(parcel.finalPaymentDeadline)}`
+                : ""}
+            </Text>
+          </View>
+        ) : null}
         {parcel.description ? (
           <View style={styles.metaRow}>
             <MaterialIcons
@@ -1009,31 +1117,10 @@ function ParcelCard({
             />
           </View>
 
-          <Text style={styles.parcelHint}>Kích cỡ thực tế</Text>
-          <View style={styles.segmentRow}>
-            {PARCEL_SIZE_OPTIONS.map((option) => (
-              <ActionButton
-                key={option.value}
-                label={option.label}
-                tone={size === option.value ? "primary" : "secondary"}
-                small
-                onPress={() => setSize(option.value)}
-              />
-            ))}
-          </View>
-
-          <Text style={styles.parcelHint}>Hình thức thu phụ phí (nếu có)</Text>
-          <View style={styles.segmentRow}>
-            {PARCEL_PAYMENT_OPTIONS.map((option) => (
-              <ActionButton
-                key={option.value}
-                label={option.label}
-                tone={payment === option.value ? "primary" : "secondary"}
-                small
-                onPress={() => setPayment(option.value)}
-              />
-            ))}
-          </View>
+          <Text style={styles.parcelHint}>
+            Hệ thống tự tính kích cỡ và giá cuối từ số đo; nếu khách còn thiếu
+            tiền, khách sẽ thanh toán trên app của khách.
+          </Text>
 
           <View style={styles.segmentRow}>
             <ActionButton
@@ -1080,6 +1167,36 @@ function ParcelCard({
         </View>
       ) : (
         <View style={styles.parcelActionStack}>
+          {actions.includes("check-in") ? (
+            <ActionButton
+              icon="how-to-reg"
+              label={checkIn.isPending ? "Đang nhận…" : "Nhận kiện tại bến"}
+              tone="primary"
+              small
+              disabled={busy}
+              onPress={() =>
+                checkIn.mutate({
+                  parcelId: parcel.parcelId,
+                  parcelCode: parcel.parcelCode,
+                })
+              }
+            />
+          ) : null}
+          {actions.includes("load") ? (
+            <ActionButton
+              icon="file-upload"
+              label={load.isPending ? "Đang xếp…" : "Xếp lên xe"}
+              tone="primary"
+              small
+              disabled={busy}
+              onPress={() =>
+                load.mutate({
+                  parcelId: parcel.parcelId,
+                  parcelCode: parcel.parcelCode,
+                })
+              }
+            />
+          ) : null}
           {actions.includes("reweigh") ? (
             <ActionButton
               icon="scale"
@@ -1098,6 +1215,16 @@ function ParcelCard({
               small
               disabled={busy}
               onPress={() => unload.mutate(parcel.parcelId)}
+            />
+          ) : null}
+          {actions.includes("deliver") ? (
+            <ActionButton
+              icon="local-shipping"
+              label={deliver.isPending ? "Đang giao…" : "Giao cho người nhận"}
+              tone="primary"
+              small
+              disabled={busy}
+              onPress={() => deliver.mutate(parcel.parcelId)}
             />
           ) : null}
           {actions.includes("confirm-delivery") ? (
@@ -1124,98 +1251,149 @@ function ParcelCard({
 export function AssistantStopsScreen() {
   const styles = useThemedStyles(makeStyles);
   const theme = useTheme();
-  const {
-    cargoMetrics,
-    currentStop,
-    currentStopArrived,
-    markCurrentStopArrived,
-    nextStop,
-    pendingAtCurrentStopCount,
-    routeStops,
-    trip,
-  } = useOperations();
+  const activeTrip = useActiveTrip();
+  const tripId = activeTrip.trip?.tripId ?? null;
+  const detailsQuery = useTripDetails(tripId);
+  const details = detailsQuery.data;
 
-  const stopActionLabel = currentStopArrived
-    ? "Đã ghi nhận điểm dừng"
-    : `Đã đến ${currentStop.shortName}`;
+  const arriveStop = useArriveAtStop(tripId);
+  const arriveDestination = useArriveAtDestination(tripId);
+
+  const tripRunning =
+    normalizeTripStatus(activeTrip.trip?.status) === "IN_PROGRESS";
+  const busy = arriveStop.isPending || arriveDestination.isPending;
+  const errorMessage = firstErrorMessage(
+    arriveStop.error,
+    arriveDestination.error,
+  );
+
+  const arrivedAtDestination = details?.destinationArrivedAt != null;
+
+  // Điểm dừng kế tiếp = điểm đầu tiên còn PENDING. Điểm SKIPPED đã chốt nên
+  // không phải là điểm kế tiếp.
+  const nextStop = useMemo(() => {
+    if (!details) {
+      return null;
+    }
+    return (
+      [...details.stops]
+        .sort((a, b) => a.orderIndex - b.orderIndex)
+        .find((stop) => stop.status === "PENDING") ?? null
+    );
+  }, [details]);
+
+  const remainingStops = details
+    ? details.stops.filter((stop) => stop.status === "PENDING").length
+    : 0;
 
   return (
     <OperationsScreen
       title="Điểm dừng và giờ đến"
-      subtitle={trip.vehicleLabel}
+      subtitle={details?.originStation?.name ?? "Chuyến của bạn hôm nay"}
       headerRight={<NotificationBell />}
     >
-      <SurfaceCard accent delay={0}>
-        <View style={styles.routeSummary}>
-          <View style={styles.routeEndpoint}>
-            <Text style={styles.routeEndpointLabel}>Điểm đi</Text>
-            <Text style={styles.routeEndpointName} numberOfLines={2}>
-              {routeStops[0].name}
+      {activeTrip.isLoading || (tripId && detailsQuery.isLoading) ? (
+        <LoadingCard label="Đang tải điểm dừng…" />
+      ) : !tripId ? (
+        <EmptyCard message="Chưa có chuyến nào đang chạy." />
+      ) : detailsQuery.isError ? (
+        <ErrorCard
+          message="Không tải được chi tiết chuyến."
+          onRetry={() => void detailsQuery.refetch()}
+        />
+      ) : details ? (
+        <>
+          <SurfaceCard accent delay={0}>
+            <View style={styles.routeSummary}>
+              <View style={styles.routeEndpoint}>
+                <Text style={styles.routeEndpointLabel}>Điểm đi</Text>
+                <Text style={styles.routeEndpointName} numberOfLines={2}>
+                  {details.originStation?.name ?? "—"}
+                </Text>
+              </View>
+              <MaterialIcons
+                name="arrow-forward"
+                size={22}
+                color={theme.primary}
+              />
+              <View style={styles.routeEndpoint}>
+                <Text style={styles.routeEndpointLabel}>Điểm đến</Text>
+                <Text style={styles.routeEndpointName} numberOfLines={2}>
+                  {details.destinationStation?.name ?? "—"}
+                </Text>
+              </View>
+            </View>
+
+            <View style={styles.metricRow}>
+              <MetricTile
+                icon="navigation"
+                value={
+                  nextStop ? `Điểm ${nextStop.orderIndex}` : "Hết điểm dừng"
+                }
+                hint={
+                  nextStop
+                    ? `Dự kiến ${formatTimeHM(nextStop.estimatedArrivalTime)}`
+                    : "Còn bến cuối"
+                }
+                tone="primary"
+                compact
+              />
+              <MetricTile
+                icon="pin-drop"
+                value={String(remainingStops)}
+                hint="Điểm còn lại"
+                tone={remainingStops > 0 ? "warning" : "success"}
+                compact
+              />
+            </View>
+          </SurfaceCard>
+
+          <TripStopsCard
+            details={details}
+            nextStopId={nextStop?.stopId ?? null}
+            onArrive={(stopId) => arriveStop.mutate(stopId)}
+            actionDisabled={!tripRunning || busy}
+            pendingStopId={arriveStop.isPending ? arriveStop.variables : null}
+          />
+
+          <SurfaceCard delay={180}>
+            <SectionTitle
+              icon="flag"
+              title="Bến cuối"
+              subtitle="Xác nhận để mở khoá dỡ kiện trả tại bến"
+            />
+
+            <Text style={styles.metaText}>
+              Xác nhận tới bến KHÔNG kết thúc chuyến. Chuyến vẫn đang chạy cho
+              tới khi tài xế bấm hoàn tất.
             </Text>
-          </View>
-          <MaterialIcons name="arrow-forward" size={22} color={theme.primary} />
-          <View style={styles.routeEndpoint}>
-            <Text style={styles.routeEndpointLabel}>Điểm đến</Text>
-            <Text style={styles.routeEndpointName} numberOfLines={2}>
-              {routeStops[routeStops.length - 1].name}
-            </Text>
-          </View>
-        </View>
 
-        <View style={styles.metricRow}>
-          <MetricTile
-            icon="my-location"
-            value={currentStop.shortName}
-            hint="Hiện tại"
-            tone="warning"
-            compact
-          />
-          <MetricTile
-            icon="navigation"
-            value={nextStop.shortName}
-            hint={`Đến sau ${trip.nextStopEta}`}
-            tone="primary"
-            compact
-          />
-        </View>
+            <ActionButton
+              icon="flag"
+              label={
+                arrivedAtDestination
+                  ? "Đã ghi nhận tới bến cuối"
+                  : arriveDestination.isPending
+                    ? "Đang ghi nhận…"
+                    : "Đã tới bến cuối"
+              }
+              tone={arrivedAtDestination ? "ghost" : "primary"}
+              disabled={!tripRunning || busy || arrivedAtDestination}
+              onPress={() => arriveDestination.mutate()}
+            />
 
-        <View style={styles.metricRow}>
-          <MetricTile
-            icon="groups"
-            value={String(pendingAtCurrentStopCount)}
-            hint="Chờ lên"
-            tone={pendingAtCurrentStopCount > 0 ? "warning" : "success"}
-            compact
-          />
-          <MetricTile
-            icon="file-download"
-            value={String(cargoMetrics.unloadNext)}
-            hint="Chờ dỡ"
-            tone="info"
-            compact
-          />
-        </View>
-      </SurfaceCard>
+            {!tripRunning ? (
+              <Text style={styles.metaText}>
+                Chỉ ghi nhận được khi chuyến đang chạy.
+              </Text>
+            ) : null}
 
-      <RouteStopsCard routeStops={routeStops} />
-
-      <SurfaceCard delay={180}>
-        <SectionTitle icon="task-alt" title="Tác vụ tại điểm" />
-
-        <View style={styles.actionRow}>
-          <ActionButton
-            label="Mở đón khách"
-            tone="secondary"
-            onPress={() => undefined}
-          />
-          <ActionButton
-            label={stopActionLabel}
-            tone={currentStopArrived ? "ghost" : "primary"}
-            disabled={trip.status !== "IN_PROGRESS" || currentStopArrived}
-            onPress={markCurrentStopArrived}
-          />
-        </View>
-      </SurfaceCard>
+            {errorMessage ? (
+              <Text style={styles.errorText}>{errorMessage}</Text>
+            ) : null}
+          </SurfaceCard>
+        </>
+      ) : null}
     </OperationsScreen>
   );
 }
@@ -1896,17 +2074,23 @@ function WorkScheduleSection({
 
 // Tiến trình tuyến từ API. Gap backend: stop chỉ có id + ETA, không có tên
 // → hiển thị "Điểm dừng {orderIndex}" kèm giờ và loại đón/trả.
+// Dùng chung cho màn chuyến (chỉ xem) và màn điểm dừng (có thao tác).
+// Truyền `onArrive` để bật nút xác nhận đã đến từng điểm.
 function TripStopsCard({
   details,
   nextStopId,
+  onArrive,
+  actionDisabled = false,
+  pendingStopId = null,
 }: {
   details: TripDetails;
   nextStopId: string | null;
+  onArrive?: (stopId: string) => void;
+  actionDisabled?: boolean;
+  pendingStopId?: string | null;
 }) {
   const styles = useThemedStyles(makeStyles);
   const stops = [...details.stops].sort((a, b) => a.orderIndex - b.orderIndex);
-  // Chốt "bây giờ" theo details để render thuần (không gọi Date.now() trực tiếp).
-  const now = useMemo(() => new Date().getTime(), []);
 
   return (
     <SurfaceCard delay={120}>
@@ -1914,8 +2098,10 @@ function TripStopsCard({
 
       <View style={styles.stopStack}>
         {stops.map((stop) => {
-          const arrived =
-            new Date(stop.estimatedArrivalTime).getTime() <= now;
+          const arrived = stop.status === "ARRIVED";
+          const skipped = stop.status === "SKIPPED";
+          // Điểm đã chốt (đến hoặc bỏ qua) thì không còn thao tác.
+          const finalized = arrived || skipped;
           const isNext = stop.stopId === nextStopId;
 
           return (
@@ -1949,16 +2135,49 @@ function TripStopsCard({
                     </Text>
                   </View>
                   <StatusChip
-                    label={isNext ? "Kế tiếp" : arrived ? "Đã qua" : "Sắp tới"}
-                    tone={isNext ? "warning" : arrived ? "success" : "neutral"}
+                    label={
+                      arrived
+                        ? "Đã đến"
+                        : skipped
+                          ? "Đã bỏ qua"
+                          : isNext
+                            ? "Kế tiếp"
+                            : "Sắp tới"
+                    }
+                    tone={
+                      arrived
+                        ? "success"
+                        : skipped
+                          ? "neutral"
+                          : isNext
+                            ? "warning"
+                            : "neutral"
+                    }
                   />
                 </View>
                 <Text style={styles.stopMeta}>
-                  Dự kiến {formatTimeHM(stop.estimatedArrivalTime)}
+                  {stop.actualArrivalTime
+                    ? `Đến lúc ${formatTimeHM(stop.actualArrivalTime)}`
+                    : `Dự kiến ${formatTimeHM(stop.estimatedArrivalTime)}`}
                   {stop.distanceFromOriginKm != null
                     ? ` • km ${stop.distanceFromOriginKm}`
                     : ""}
                 </Text>
+
+                {onArrive && !finalized ? (
+                  <ActionButton
+                    icon="check"
+                    label={
+                      pendingStopId === stop.stopId
+                        ? "Đang ghi nhận…"
+                        : "Đã đến điểm này"
+                    }
+                    tone="primary"
+                    small
+                    disabled={actionDisabled}
+                    onPress={() => onArrive(stop.stopId)}
+                  />
+                ) : null}
               </View>
             </View>
           );
@@ -1968,55 +2187,6 @@ function TripStopsCard({
   );
 }
 
-function RouteStopsCard({
-  routeStops,
-}: {
-  routeStops: ReturnType<typeof useOperations>["routeStops"];
-}) {
-  const styles = useThemedStyles(makeStyles);
-  return (
-    <SurfaceCard delay={120}>
-      <SectionTitle icon="route" title="Tiến trình tuyến" />
-
-      <View style={styles.stopStack}>
-        {routeStops.map((stop) => (
-          <View key={stop.id} style={styles.stopRow}>
-            <View style={styles.stopMarkerColumn}>
-              <View
-                style={[
-                  styles.stopMarker,
-                  stop.stage === "COMPLETED" && styles.stopMarkerCompleted,
-                  stop.stage === "CURRENT" && styles.stopMarkerCurrent,
-                ]}
-              />
-              <View
-                style={
-                  stop.stage === "UPCOMING"
-                    ? styles.stopLine
-                    : styles.stopLineActive
-                }
-              />
-            </View>
-
-            <View style={styles.stopContent}>
-              <View style={styles.stopHeader}>
-                <View style={styles.stopNameBlock}>
-                  <Text style={styles.stopTitle}>{stop.name}</Text>
-                  <Text style={styles.stopSubtitle}>{stop.zone}</Text>
-                </View>
-                <StatusChip label={stop.statusLabel} tone={stop.tone} />
-              </View>
-              <Text style={styles.stopMeta}>{stop.timeLabel}</Text>
-              {stop.note ? (
-                <Text style={styles.stopNote}>{stop.note}</Text>
-              ) : null}
-            </View>
-          </View>
-        ))}
-      </View>
-    </SurfaceCard>
-  );
-}
 
 const makeStyles = (c: Palette) =>
   StyleSheet.create({
@@ -2535,6 +2705,11 @@ const makeStyles = (c: Palette) =>
     color: "#FFD600",
     fontSize: 13,
     lineHeight: 18,
+  },
+  errorText: {
+    color: c.danger,
+    fontSize: 13,
+    lineHeight: 19,
   },
   fieldLabel: {
     color: c.textSecondary,

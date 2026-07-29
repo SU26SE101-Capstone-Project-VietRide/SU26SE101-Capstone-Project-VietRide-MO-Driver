@@ -1,5 +1,6 @@
 import { fetch } from "expo/fetch";
 
+import { newIdempotencyKey } from "./idempotency";
 import { clearTokens, getTokens, setTokens } from "./token-storage";
 import type { ApiErrorField, Envelope, LoginData } from "./types";
 
@@ -132,11 +133,48 @@ export type ApiRequestOptions = {
   headers?: Record<string, string>;
 };
 
+// Backend chuẩn hoá idempotency toàn hệ thống (guide 2026-07-23,
+// docs/Implements/IDEMPOTENCY_CLIENT_MIGRATION_GUIDE.md): mọi mutation
+// POST/PUT/PATCH/DELETE "bắt buộc" phải gửi Idempotency-Key là UUID v4, thiếu →
+// 422 IDEMPOTENCY_KEY_REQUIRED. Các endpoint "miễn" (login/google/refresh) gửi
+// key thừa vẫn vô hại. Tự bù key cho mọi mutation chưa có để phủ hết một chỗ,
+// không phải nhớ thêm ở từng call. Với app driver các mutation đều có state
+// machine phía backend (arrive→ARRIVED, complete→COMPLETED…) nên key-per-call
+// đủ an toàn; chưa cần helper "operation key" cho retry-cùng-thao-tác vì app
+// không có offline queue và nút submit đã disable khi request đang chạy.
+function hasIdempotencyKey(headers?: Record<string, string>): boolean {
+  if (!headers) {
+    return false;
+  }
+  return Object.keys(headers).some(
+    (name) => name.toLowerCase() === "idempotency-key",
+  );
+}
+
 export async function apiRequest<T>(
   path: string,
   options: ApiRequestOptions = {},
 ): Promise<T> {
-  return requestInternal<T>(path, options, false);
+  const method = (
+    options.method ?? (options.body !== undefined ? "POST" : "GET")
+  ).toUpperCase();
+  const isMutation = method !== "GET" && method !== "HEAD";
+
+  // Sinh key một lần ở đây (không phải trong requestInternal) để retry sau khi
+  // refresh 401 dùng lại đúng key — giữ đúng ngữ nghĩa idempotent.
+  const finalOptions =
+    isMutation && !hasIdempotencyKey(options.headers)
+      ? {
+          ...options,
+          headers: {
+            "Idempotency-Key": newIdempotencyKey(),
+            // Header do caller truyền vẫn được ưu tiên (ghi đè key mặc định).
+            ...options.headers,
+          },
+        }
+      : options;
+
+  return requestInternal<T>(path, finalOptions, false);
 }
 
 async function requestInternal<T>(

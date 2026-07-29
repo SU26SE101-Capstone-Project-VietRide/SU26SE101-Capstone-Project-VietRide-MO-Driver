@@ -1,6 +1,7 @@
 import { fetch } from "expo/fetch";
 
 import { apiRequest, API_BASE_URL, ApiError } from "./client";
+import { newIdempotencyKey } from "./idempotency";
 import { getTokens } from "./token-storage";
 import type { Envelope, RagFeedbackData, RagRating } from "./types";
 
@@ -87,6 +88,10 @@ export async function streamRagChat(params: RagChatParams): Promise<void> {
     headers: {
       "Content-Type": "application/json",
       Accept: "text/event-stream",
+      // BE yêu cầu Idempotency-Key cho /rag/chat (kiểm chứng production
+      // 2026-07-26: thiếu → 422 IDEMPOTENCY_KEY_REQUIRED), dù API-RAG.md chưa
+      // ghi. Mỗi câu hỏi là request mới nên sinh key mới mỗi lần gọi.
+      "Idempotency-Key": newIdempotencyKey(),
       ...(tokens ? { Authorization: `Bearer ${tokens.accessToken}` } : {}),
     },
     body: JSON.stringify({

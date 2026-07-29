@@ -13,13 +13,18 @@ export function getManifest(
   );
 }
 
+// BE xác nhận (2026-07-28): QR trên vé do app khách render encode ticketCode
+// (BE tạo riêng từng vé, không sinh ảnh QR). Chỉ Booking CONFIRMED + vé
+// ISSUED/USED quét được. Body hiện gửi field `bookingCode` (nhập tay vẫn dùng
+// mã booking); đang chờ BE chốt schema chính thức cho giá trị quét từ QR —
+// xem BE-GAPS.md mục 2.
 export function scanQr(
   tripId: string,
-  bookingCode: string,
+  code: string,
 ): Promise<{ items: QrScanResultItem[] }> {
   return apiRequest<{ items: QrScanResultItem[] }>(
     `/v1/bookings/trips/${tripId}/boarding/qr-scan`,
-    { method: "POST", body: { bookingCode } },
+    { method: "POST", body: { bookingCode: code } },
   );
 }
 
