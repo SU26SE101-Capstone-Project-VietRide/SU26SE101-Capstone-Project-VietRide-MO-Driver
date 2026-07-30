@@ -1,7 +1,15 @@
 import { MaterialIcons } from "@expo/vector-icons";
+import { useQueryClient } from "@tanstack/react-query";
 import { useRouter } from "expo-router";
 import { useMemo, useState } from "react";
-import { Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
+import {
+    Pressable,
+    RefreshControl,
+    ScrollView,
+    StyleSheet,
+    Text,
+    View,
+} from "react-native";
 import Animated, { FadeInDown } from "react-native-reanimated";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
@@ -50,6 +58,18 @@ export default function NotificationsScreen() {
   const listQuery = useNotificationList({ page });
   const unreadNotificationsCount = useUnreadNotificationsCount();
   const markRead = useMarkNotificationReadMutation();
+  const queryClient = useQueryClient();
+
+  // Kéo xuống để tải lại danh sách + badge chưa đọc (invalidate cả nhóm
+  // ["notifications"] nên list lẫn unread-count cùng refetch).
+  const [refreshing, setRefreshing] = useState(false);
+  const handleRefresh = () => {
+    setRefreshing(true);
+    void queryClient
+      .invalidateQueries({ queryKey: ["notifications"] })
+      .catch(() => undefined)
+      .finally(() => setRefreshing(false));
+  };
 
   // Chốt "bây giờ" theo lần data đổi để format thời gian tương đối khi render.
   const now = useMemo(() => new Date().getTime(), []);
@@ -167,6 +187,15 @@ export default function NotificationsScreen() {
 
       <ScrollView
         style={styles.list}
+        refreshControl={
+          <RefreshControl
+            refreshing={refreshing}
+            onRefresh={handleRefresh}
+            tintColor={theme.primary}
+            colors={[theme.primary]}
+            progressBackgroundColor={theme.backgroundElement}
+          />
+        }
         contentContainerStyle={[
           styles.listContent,
           { paddingBottom: insets.bottom + Spacing.four },

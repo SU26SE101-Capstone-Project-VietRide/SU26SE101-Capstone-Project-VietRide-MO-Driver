@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
-import { getManifest, scanQr } from "@/api/boarding";
+import { boardPassenger, getManifest, scanQr } from "@/api/boarding";
 import type { ManifestItem } from "@/api/types";
 
 export function useManifest(tripId: string | null) {
@@ -15,8 +15,21 @@ export function useQrScanMutation(tripId: string | null) {
   const queryClient = useQueryClient();
 
   return useMutation({
-    mutationFn: (bookingCode: string) =>
-      scanQr(tripId as string, bookingCode.trim().toUpperCase()),
+    // Scan chỉ tra cứu vé; muốn tính là "đã lên xe" phải gọi tiếp
+    // boardPassenger cho từng passengerRecordId chưa boarded (BE-GAPS-RESPONSE §2).
+    mutationFn: async (code: string) => {
+      const result = await scanQr(tripId as string, code.trim().toUpperCase());
+
+      await Promise.all(
+        result.items
+          .filter((item) => !isBoardedStatus(item.boardingStatus))
+          .map((item) =>
+            boardPassenger(tripId as string, item.passengerRecordId),
+          ),
+      );
+
+      return result;
+    },
     onSuccess: () => {
       // Check-in xong → manifest và seat-map đổi trạng thái.
       void queryClient.invalidateQueries({ queryKey: ["manifest", tripId] });

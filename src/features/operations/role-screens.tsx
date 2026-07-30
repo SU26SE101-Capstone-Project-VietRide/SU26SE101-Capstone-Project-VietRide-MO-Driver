@@ -1,4 +1,5 @@
 import { MaterialIcons } from "@expo/vector-icons";
+import { useQueryClient } from "@tanstack/react-query";
 import { useRouter } from "expo-router";
 import { useMemo, useState, type ComponentProps } from "react";
 import {
@@ -154,12 +155,17 @@ function openDirectionsByName(destinationName: string) {
 export function DriverOverviewScreen() {
   const router = useRouter();
   const { displayName } = useAuthenticatedSession();
+  const queryClient = useQueryClient();
 
   return (
     <OperationsScreen
       title="Lịch làm việc"
       subtitle={displayName}
       headerRight={<NotificationBell />}
+      // Query lịch nằm trong WorkScheduleSection → refetch qua invalidate.
+      onRefresh={() =>
+        queryClient.invalidateQueries({ queryKey: ["schedule"] })
+      }
     >
       <WorkScheduleSection onOpenActive={() => router.push("/driver/trip")} />
     </OperationsScreen>
@@ -169,12 +175,16 @@ export function DriverOverviewScreen() {
 export function AssistantOverviewScreen() {
   const router = useRouter();
   const { displayName } = useAuthenticatedSession();
+  const queryClient = useQueryClient();
 
   return (
     <OperationsScreen
       title="Lịch làm việc"
       subtitle={displayName}
       headerRight={<NotificationBell />}
+      onRefresh={() =>
+        queryClient.invalidateQueries({ queryKey: ["schedule"] })
+      }
     >
       <WorkScheduleSection
         onOpenActive={() => router.push("/assistant/boarding")}
@@ -224,6 +234,12 @@ export function DriverTripScreen() {
       title="Chuyến đang chạy"
       subtitle={details?.originStation?.name ?? "Chuyến của bạn hôm nay"}
       headerRight={<NotificationBell />}
+      onRefresh={() =>
+        Promise.all([
+          activeTrip.refetch(),
+          ...(tripId ? [detailsQuery.refetch(), routeQuery.refetch()] : []),
+        ])
+      }
     >
       {activeTrip.isLoading || (activeTrip.trip && detailsQuery.isLoading) ? (
         <LoadingCard label="Đang tải chuyến…" />
@@ -595,6 +611,13 @@ export function AssistantBoardingScreen() {
           : "Chưa có chuyến hôm nay"
       }
       headerRight={<NotificationBell />}
+      // Khách đặt vé mới không có push cho manifest → kéo xuống để cập nhật.
+      onRefresh={() =>
+        Promise.all([
+          activeTrip.refetch(),
+          ...(tripId ? [manifestQuery.refetch(), seatMapQuery.refetch()] : []),
+        ])
+      }
     >
       {activeTrip.isLoading ? (
         <LoadingCard label="Đang tải chuyến hôm nay…" />
@@ -865,6 +888,15 @@ export function AssistantCargoScreen() {
       title="Hàng ký gửi"
       subtitle="Nhận, dỡ và giao kiện hàng của chuyến."
       headerRight={<NotificationBell />}
+      // Kiện có thể đổi trạng thái từ nơi khác (khách trả tiền, operator xử lý)
+      // → kéo xuống để đồng bộ, tránh bấm nút trên trạng thái cũ dính 409.
+      onRefresh={() =>
+        Promise.all([
+          activeTrip.refetch(),
+          scheduleQuery.refetch(),
+          ...(tripId ? [parcelsQuery.refetch()] : []),
+        ])
+      }
     >
       {activeTrip.isLoading || (tripId && parcelsQuery.isLoading) ? (
         <LoadingCard label="Đang tải kiện hàng…" />
@@ -1291,6 +1323,12 @@ export function AssistantStopsScreen() {
       title="Điểm dừng và giờ đến"
       subtitle={details?.originStation?.name ?? "Chuyến của bạn hôm nay"}
       headerRight={<NotificationBell />}
+      onRefresh={() =>
+        Promise.all([
+          activeTrip.refetch(),
+          ...(tripId ? [detailsQuery.refetch()] : []),
+        ])
+      }
     >
       {activeTrip.isLoading || (tripId && detailsQuery.isLoading) ? (
         <LoadingCard label="Đang tải điểm dừng…" />

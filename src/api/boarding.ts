@@ -13,23 +13,26 @@ export function getManifest(
   );
 }
 
-// BE xác nhận (2026-07-28): QR trên vé do app khách render encode ticketCode
-// (BE tạo riêng từng vé, không sinh ảnh QR). Chỉ Booking CONFIRMED + vé
-// ISSUED/USED quét được. Body hiện gửi field `bookingCode` (nhập tay vẫn dùng
-// mã booking); đang chờ BE chốt schema chính thức cho giá trị quét từ QR —
-// xem BE-GAPS.md mục 2.
+// BE chốt schema (BE-GAPS-RESPONSE.md §2): body nhận đúng MỘT trong hai field —
+// mã `VT-...` (ticketCode, QR trên vé) gửi `ticketCode`, mã booking `VR-...`
+// (nhập tay/legacy) gửi `bookingCode`. Gửi sai field bị validation 422.
+// Scan chỉ đọc dữ liệu vé, KHÔNG tự xác nhận lên xe — sau scan phải gọi
+// boardPassenger(passengerRecordId).
 export function scanQr(
   tripId: string,
   code: string,
 ): Promise<{ items: QrScanResultItem[] }> {
+  const body = code.startsWith("VT-")
+    ? { ticketCode: code }
+    : { bookingCode: code };
+
   return apiRequest<{ items: QrScanResultItem[] }>(
     `/v1/bookings/trips/${tripId}/boarding/qr-scan`,
-    { method: "POST", body: { bookingCode: code } },
+    { method: "POST", body },
   );
 }
 
-// Check-in theo passengerRecordId. Manifest hiện CHƯA trả id này (gap backend)
-// nên UI đang check-in bằng scanQr(bookingCode); giữ hàm để dùng khi backend bổ sung.
+// Xác nhận hành khách đã lên xe theo passengerRecordId (lấy từ response scanQr).
 export function boardPassenger(
   tripId: string,
   passengerRecordId: string,

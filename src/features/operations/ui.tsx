@@ -1,11 +1,14 @@
 import { MaterialIcons } from "@expo/vector-icons";
 import {
+    useCallback,
+    useState,
     type ComponentProps,
     type PropsWithChildren,
     type ReactNode,
 } from "react";
 import {
     Pressable,
+    RefreshControl,
     ScrollView,
     StyleSheet,
     Text,
@@ -25,17 +28,33 @@ export function OperationsScreen({
   children,
   headerRight,
   onBack,
+  onRefresh,
   subtitle,
   title,
 }: PropsWithChildren<{
   headerRight?: ReactNode;
   onBack?: () => void;
+  // Kéo xuống để tải lại dữ liệu màn hình (BE không push realtime cho manifest/
+  // parcel — booking mới từ khách chỉ hiện khi refetch). Promise resolve xong
+  // thì spinner ẩn; lỗi refetch đã nằm trong state của từng query nên nuốt được.
+  onRefresh?: () => Promise<unknown>;
   subtitle: string;
   title: string;
 }>) {
   const insets = useSafeAreaInsets();
   const theme = useTheme();
   const styles = useThemedStyles(makeStyles);
+  const [refreshing, setRefreshing] = useState(false);
+
+  const handleRefresh = useCallback(() => {
+    if (!onRefresh) {
+      return;
+    }
+    setRefreshing(true);
+    void Promise.resolve(onRefresh())
+      .catch(() => undefined)
+      .finally(() => setRefreshing(false));
+  }, [onRefresh]);
 
   return (
     <View style={[styles.screen, { backgroundColor: theme.background }]}>
@@ -44,6 +63,17 @@ export function OperationsScreen({
 
       <ScrollView
         style={styles.scroll}
+        refreshControl={
+          onRefresh ? (
+            <RefreshControl
+              refreshing={refreshing}
+              onRefresh={handleRefresh}
+              tintColor={theme.primary}
+              colors={[theme.primary]}
+              progressBackgroundColor={theme.backgroundElement}
+            />
+          ) : undefined
+        }
         contentContainerStyle={[
           styles.content,
           {

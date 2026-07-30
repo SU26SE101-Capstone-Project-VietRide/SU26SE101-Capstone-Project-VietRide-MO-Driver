@@ -147,6 +147,9 @@ export type ManifestItem = {
 };
 
 export type QrScanResultItem = {
+  passengerRecordId: string;
+  ticketId?: string;
+  ticketCode?: string;
   seatNumber: string;
   boardingStatus: string;
 };
