@@ -59,6 +59,8 @@ function toGpsPayload(
 // enabled=false hoặc tripId=null thì dừng và dọn dẹp.
 export function useGpsBroadcast(tripId: string | null, enabled: boolean) {
   const [status, setStatus] = useState<GpsBroadcastStatus>("idle");
+  // TODO(debug): thông tin chẩn đoán tạm, xóa sau khi xong
+  const [debug, setDebug] = useState<string>("");
   const socketRef = useRef<Socket | null>(null);
   const watchRef = useRef<Location.LocationSubscription | null>(null);
 
@@ -78,6 +80,9 @@ export function useGpsBroadcast(tripId: string | null, enabled: boolean) {
         cleanup();
         if (!cancelled) {
           setStatus("idle");
+          setDebug(
+            `idle: flag=${TRACKING_ENABLED} enabled=${enabled} trip=${tripId ?? "null"}`,
+          );
         }
         return;
       }
@@ -98,6 +103,7 @@ export function useGpsBroadcast(tripId: string | null, enabled: boolean) {
       if (cancelled || !tokens) {
         if (!cancelled) {
           setStatus("error");
+          setDebug("error: no tokens");
         }
         return;
       }
@@ -106,9 +112,12 @@ export function useGpsBroadcast(tripId: string | null, enabled: boolean) {
       const socket = createTrackingSocket(tokens.accessToken);
       socketRef.current = socket;
 
-      socket.on("connect_error", () => {
+      socket.on("connect_error", (err) => {
+        // TODO(debug): log tạm để chẩn đoán lỗi kết nối tracking, xóa sau khi xong
+        console.log("[gps-broadcast] connect_error:", err?.message, err);
         if (!cancelled) {
           setStatus("error");
+          setDebug(`connect_error: ${err?.message ?? String(err)}`);
         }
       });
 
@@ -146,9 +155,13 @@ export function useGpsBroadcast(tripId: string | null, enabled: boolean) {
 
             setStatus("tracking");
           })
-          .catch(() => {
+          .catch((err: unknown) => {
+            // TODO(debug): log tạm để chẩn đoán lỗi join room, xóa sau khi xong
+            const msg = err instanceof Error ? err.message : String(err);
+            console.log("[gps-broadcast] join failed:", msg);
             if (!cancelled) {
               setStatus("error");
+              setDebug(`join failed: ${msg}`);
             }
           });
       });
@@ -162,5 +175,6 @@ export function useGpsBroadcast(tripId: string | null, enabled: boolean) {
     };
   }, [tripId, enabled, cleanup]);
 
-  return { status };
+  // TODO(debug): trả thêm debug tạm thời, xóa sau khi xong
+  return { status, debug };
 }

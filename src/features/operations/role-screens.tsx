@@ -352,7 +352,7 @@ export function DriverTripScreen() {
               <MetricTile
                 icon="gps-fixed"
                 value={gpsMeta.label}
-                hint="Phát vị trí"
+                hint={gps.debug || "Phát vị trí"}
                 tone={gpsMeta.tone}
                 compact
               />
