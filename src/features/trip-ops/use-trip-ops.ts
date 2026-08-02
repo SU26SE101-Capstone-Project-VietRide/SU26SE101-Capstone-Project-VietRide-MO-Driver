@@ -1,5 +1,7 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import * as Location from "expo-location";
+import { useEffect, useState } from "react";
+import { Linking } from "react-native";
 
 import {
   arriveAtDestination,
@@ -70,6 +72,52 @@ export function useReportIncident(tripId: string | null) {
 // Lấy toạ độ hiện tại cho báo sự cố, best-effort.
 // Từ chối quyền hoặc lấy không được thì trả null — backend cho phép gửi thiếu
 // toạ độ, không được vì thế mà chặn tài xế báo sự cố.
+// Trạng thái quyền vị trí để form báo sự cố nói rõ báo cáo có kèm toạ độ hay
+// không, thay vì tới lúc gửi mới âm thầm bỏ qua vị trí.
+export function useLocationPermission() {
+  const [granted, setGranted] = useState<boolean | null>(null);
+  const [requesting, setRequesting] = useState(false);
+
+  useEffect(() => {
+    let alive = true;
+    // getForegroundPermissionsAsync chỉ ĐỌC trạng thái, không bật hộp thoại xin
+    // quyền — hộp thoại chỉ hiện khi người dùng chủ động chạm.
+    void Location.getForegroundPermissionsAsync()
+      .then((permission) => {
+        if (alive) {
+          setGranted(permission.granted);
+        }
+      })
+      .catch(() => {
+        if (alive) {
+          setGranted(false);
+        }
+      });
+
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  const request = async () => {
+    setRequesting(true);
+    try {
+      const permission = await Location.requestForegroundPermissionsAsync();
+      setGranted(permission.granted);
+      // Người dùng đã từ chối vĩnh viễn → chỉ còn cách vào Cài đặt hệ thống.
+      if (!permission.granted && !permission.canAskAgain) {
+        void Linking.openSettings();
+      }
+    } catch {
+      setGranted(false);
+    } finally {
+      setRequesting(false);
+    }
+  };
+
+  return { granted, requesting, request };
+}
+
 export async function getCurrentCoords(): Promise<{
   latitude: number;
   longitude: number;

@@ -1,12 +1,18 @@
 import { MaterialIcons } from "@expo/vector-icons";
 import {
     useCallback,
+    useEffect,
+    useRef,
     useState,
     type ComponentProps,
     type PropsWithChildren,
     type ReactNode,
 } from "react";
 import {
+    Dimensions,
+    Keyboard,
+    KeyboardAvoidingView,
+    Platform,
     Pressable,
     RefreshControl,
     ScrollView,
@@ -18,12 +24,13 @@ import {
 import Animated, { FadeInDown } from "react-native-reanimated";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
-import { BottomTabInset, Fonts, Spacing, type Palette } from "@/constants/theme";
+import { Fonts, Spacing, type Palette } from "@/constants/theme";
 import { type Tone } from "@/features/operations/mock-data";
 import { useSession } from "@/features/session/session-context";
 import { useTheme, useThemedStyles } from "@/hooks/use-theme";
 
 type MaterialIconName = ComponentProps<typeof MaterialIcons>["name"];
+
 
 export function OperationsScreen({
   children,
@@ -65,6 +72,61 @@ export function OperationsScreen({
           color: theme.tones.primary.text,
         };
 
+  const scrollRef = useRef<ScrollView>(null);
+  const rootRef = useRef<View>(null);
+  const keyboardOpen = useRef(false);
+  // Android edge-to-edge (mặc định từ SDK 56) KHÔNG còn co cửa sổ theo bàn phím
+  // nữa — adjustResize vô hiệu, bàn phím phủ đè lên ScrollView. Phải tự cộng
+  // chiều cao bàn phím vào padding đáy thì nội dung mới cuộn lên trên nó được.
+  const [keyboardHeight, setKeyboardHeight] = useState(0);
+
+  // Giữ ô đang gõ nằm trên bàn phím. Xử lý ngay tại đây thay vì để từng màn tự
+  // lo: các form đều đặt ô nhập ở cuối nội dung nên cuộn xuống đáy là đủ.
+  const keepInputVisible = useCallback(() => {
+    // Chỉ cuộn khi bàn phím đang mở (bàn phím mở ⇒ đang gõ ở đâu đó), tránh
+    // giật màn khi nội dung đổi vì lý do khác — query trả về, card mở rộng…
+    if (!keyboardOpen.current) {
+      return;
+    }
+    // Hai nhịp, không animate: gõ nhanh thì các animation chồng lên nhau và bị
+    // cắt ngang giữa chừng nên luôn hụt mất một dòng. Nhịp 300ms bù cho lúc
+    // layout chưa kịp co theo bàn phím.
+    setTimeout(() => scrollRef.current?.scrollToEnd({ animated: false }), 50);
+    setTimeout(() => scrollRef.current?.scrollToEnd({ animated: false }), 300);
+  }, []);
+
+  useEffect(() => {
+    const show = Keyboard.addListener("keyboardDidShow", (event) => {
+      keyboardOpen.current = true;
+
+      // Bàn phím đo từ ĐÁY MÀN HÌNH, còn ScrollView kết thúc ở phía trên tab bar
+      // → lấy nguyên endCoordinates.height là dư đúng chiều cao tab bar. Đo vị
+      // trí đáy thật của màn rồi chỉ bù phần thực sự bị bàn phím chồng lên.
+      rootRef.current?.measureInWindow((_x, y, _width, height) => {
+        // "screen" chứ không phải "window": ở chế độ edge-to-edge, window height
+        // đã trừ mất thanh điều hướng nên keyboardTop bị tính thấp đi, padding
+        // thiếu đúng chiều cao thanh đó và nút Gửi vẫn bị cắt một nửa.
+        // measureInWindow có lúc trả y âm (đo ngay trong lúc layout còn dịch
+        // chuyển) → kẹp về 0, không thì padding thiếu đúng phần âm đó và nút
+        // dưới cùng vẫn bị bàn phím cắt.
+        const screenHeight = Dimensions.get("screen").height;
+        const keyboardTop = screenHeight - event.endCoordinates.height;
+        const bottom = Math.max(0, y) + height;
+        setKeyboardHeight(Math.max(0, bottom - keyboardTop));
+        keepInputVisible();
+      });
+    });
+    const hide = Keyboard.addListener("keyboardDidHide", () => {
+      keyboardOpen.current = false;
+      setKeyboardHeight(0);
+    });
+
+    return () => {
+      show.remove();
+      hide.remove();
+    };
+  }, [keepInputVisible]);
+
   const handleRefresh = useCallback(() => {
     if (!onRefresh) {
       return;
@@ -76,12 +138,31 @@ export function OperationsScreen({
   }, [onRefresh]);
 
   return (
-    <View style={[styles.screen, { backgroundColor: theme.background }]}>
-      <View pointerEvents="none" style={styles.orbPrimary} />
-      <View pointerEvents="none" style={styles.orbSecondary} />
+    <KeyboardAvoidingView
+      // iOS không tự co layout khi bàn phím hiện → phải đệm bằng padding.
+      // Android đã có windowSoftInputMode=adjustResize nên để undefined, thêm
+      // behavior vào là bị đẩy hai lần.
+      behavior={Platform.OS === "ios" ? "padding" : undefined}
+      style={[styles.screen, { backgroundColor: theme.background }]}
+    >
+      {/* View đo đạc: KeyboardAvoidingView không cho gắn ref kiểu View nên đo
+          trên lớp bọc bên trong (cùng kích thước). */}
+      <View ref={rootRef} collapsable={false} style={styles.screen}>
+        <View pointerEvents="none" style={styles.orbPrimary} />
+        <View pointerEvents="none" style={styles.orbSecondary} />
 
       <ScrollView
+        ref={scrollRef}
         style={styles.scroll}
+        // Ô mô tả là multiline, gõ dài thì nó cao dần xuống dưới và chui vào
+        // vùng bàn phím → mỗi lần nội dung cao lên thì cuộn theo.
+        onContentSizeChange={keepInputVisible}
+        // Bàn phím: tự chừa chỗ để ô nhập/nút bấm cuối form không bị che, và cho
+        // phép chạm thẳng vào nút khi bàn phím đang mở (mặc định phải chạm 2 lần
+        // — lần đầu chỉ để đóng bàn phím).
+        automaticallyAdjustKeyboardInsets
+        keyboardShouldPersistTaps="handled"
+        keyboardDismissMode="on-drag"
         refreshControl={
           onRefresh ? (
             <RefreshControl
@@ -97,7 +178,15 @@ export function OperationsScreen({
           styles.content,
           {
             paddingTop: Math.max(insets.top, Spacing.four),
-            paddingBottom: insets.bottom + BottomTabInset + Spacing.four,
+            // Tab bar là sibling nằm dưới TabSlot (không phủ lên nội dung) nên
+            // KHÔNG cộng thêm BottomTabInset — cộng vào là thừa ra cả một khoảng
+            // trắng bằng chiều cao tab bar. insets.bottom cho các màn ngoài tab
+            // (Cài đặt) vì lúc đó ScrollView chạm đáy máy.
+            // Bàn phím mở thì chính nó đã phủ lên thanh điều hướng → cộng thêm
+            // insets.bottom nữa là thừa ra một mảng trống.
+            paddingBottom:
+              (keyboardHeight > 0 ? keyboardHeight : insets.bottom) +
+              Spacing.four,
           },
         ]}
       >
@@ -134,20 +223,21 @@ export function OperationsScreen({
           </View>
           <Text style={styles.pageSubtitle}>{subtitle}</Text>
         </View>
-        {children}
-      </ScrollView>
+          {children}
+        </ScrollView>
 
-      {/* Android bật edge-to-edge nên nội dung cuộn lên sẽ chạy dưới thanh
-          trạng thái (giờ/pin/sóng đè lên chữ). Dải này che đúng chiều cao safe
-          area trên cùng, vẽ đè lên ScrollView. */}
-      <View
-        pointerEvents="none"
-        style={[
-          styles.statusBarScrim,
-          { height: insets.top, backgroundColor: theme.background },
-        ]}
-      />
-    </View>
+        {/* Android bật edge-to-edge nên nội dung cuộn lên sẽ chạy dưới thanh
+            trạng thái (giờ/pin/sóng đè lên chữ). Dải này che đúng chiều cao safe
+            area trên cùng, vẽ đè lên ScrollView. */}
+        <View
+          pointerEvents="none"
+          style={[
+            styles.statusBarScrim,
+            { height: insets.top, backgroundColor: theme.background },
+          ]}
+        />
+      </View>
+    </KeyboardAvoidingView>
   );
 }
 

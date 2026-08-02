@@ -1,8 +1,10 @@
 import { MaterialIcons } from "@expo/vector-icons";
 import { useQueryClient } from "@tanstack/react-query";
+import * as Haptics from "expo-haptics";
 import { useRouter } from "expo-router";
 import { useMemo, useState, type ComponentProps } from "react";
 import {
+    Alert,
     Linking,
     Platform,
     Pressable,
@@ -90,6 +92,7 @@ import {
   getCurrentCoords,
   useArriveAtDestination,
   useArriveAtStop,
+  useLocationPermission,
   useReportIncident,
 } from "@/features/trip-ops/use-trip-ops";
 import {
@@ -120,6 +123,9 @@ function gpsStatusMeta(status: GpsBroadcastStatus): {
       return { label: "Chưa bật", tone: "neutral" };
   }
 }
+
+// Trần mô tả sự cố, khớp maxLength của TextInput và bộ đếm ký tự.
+const DESCRIPTION_LIMIT = 500;
 
 const INCIDENT_CATEGORY_META: Record<
   IncidentCategory,
@@ -432,36 +438,77 @@ function IncidentReportScreen({
   const details = useTripDetails(tripId).data;
   const incident = useReportIncident(tripId);
 
+  // Không chọn sẵn loại nào: báo sự cố gửi thẳng cho điều hành và không rút lại
+  // được, để mặc định "Kẹt xe" là chạm nhầm một cái bay đi một báo cáo sai.
   const [incidentCategory, setIncidentCategory] =
-    useState<IncidentCategory>("TRAFFIC_JAM");
+    useState<IncidentCategory | null>(null);
   const [incidentDescription, setIncidentDescription] = useState("");
   const [submitted, setSubmitted] = useState<ReportIncidentData | null>(null);
+  const locationPermission = useLocationPermission();
 
   const errorMessage = tripOpsErrorMessage(incident.error);
   const tripRunning =
     normalizeTripStatus(activeTrip.trip?.status) === "IN_PROGRESS";
 
-  const submit = async () => {
-    if (!tripId) {
-      return;
-    }
+  // Lý do không gửi được, hiện NGAY TRÊN nút thay vì dưới (người dùng thấy nút
+  // mờ trước, đọc lý do sau thì đã kịp bực).
+  const blockedReason = !tripId
+    ? "Chưa có chuyến nào đang chạy để báo sự cố."
+    : !tripRunning
+      ? "Chỉ báo được sự cố khi chuyến đang chạy."
+      : !incidentCategory
+        ? "Chọn loại sự cố trước khi gửi."
+        : null;
 
+  const send = async (category: IncidentCategory) => {
+    // Rung xác nhận: tài xế đang trên xe rung xóc, phản hồi xúc giác đáng tin
+    // hơn hiệu ứng thị giác. Lỗi haptics (máy tắt rung) không được chặn việc gửi.
     // Toạ độ là best-effort: không có quyền vị trí vẫn phải gửi được sự cố.
     const coords = await getCurrentCoords();
     const description = incidentDescription.trim();
 
     incident.mutate(
       {
-        category: incidentCategory,
+        category,
         description: description.length > 0 ? description : null,
         ...(coords ?? {}),
       },
       {
         onSuccess: (data) => {
+          void Haptics.notificationAsync(
+            Haptics.NotificationFeedbackType.Success,
+          );
           setSubmitted(data);
           setIncidentDescription("");
+          setIncidentCategory(null);
+        },
+        onError: () => {
+          void Haptics.notificationAsync(
+            Haptics.NotificationFeedbackType.Error,
+          );
         },
       },
+    );
+  };
+
+  // Chốt lại trước khi gửi — thao tác một chiều, không có nút thu hồi.
+  const confirmAndSend = () => {
+    if (!tripId || !incidentCategory) {
+      return;
+    }
+
+    const label = INCIDENT_CATEGORY_META[incidentCategory].label;
+    Alert.alert(
+      `Gửi báo cáo "${label}"?`,
+      "Điều hành nhận được ngay và không thể thu hồi báo cáo.",
+      [
+        { text: "Xem lại", style: "cancel" },
+        {
+          text: "Gửi ngay",
+          style: "destructive",
+          onPress: () => void send(incidentCategory),
+        },
+      ],
     );
   };
 
@@ -488,73 +535,172 @@ function IncidentReportScreen({
           }
         />
         <Text style={styles.metaText}>
-          Báo cáo gửi kèm vị trí hiện tại nếu bạn đã cấp quyền định vị. Điều hành
-          nhận được ngay, chuyến không bị đổi trạng thái.
+          Điều hành nhận được ngay, chuyến không bị đổi trạng thái.
         </Text>
+
+        {/* Nói thẳng báo cáo có kèm toạ độ hay không, chạm để cấp quyền — trước
+            đây chưa cấp quyền thì âm thầm gửi thiếu vị trí. */}
+        <Pressable
+          accessibilityRole={
+            locationPermission.granted ? "text" : "button"
+          }
+          disabled={locationPermission.granted !== false}
+          onPress={() => void locationPermission.request()}
+          style={styles.metaRow}
+        >
+          <MaterialIcons
+            name={
+              locationPermission.granted
+                ? "my-location"
+                : "location-disabled"
+            }
+            size={15}
+            color={
+              locationPermission.granted
+                ? theme.tones.success.text
+                : theme.tones.warning.text
+            }
+          />
+          <Text style={styles.metaText}>
+            {locationPermission.granted === null
+              ? "Đang kiểm tra quyền vị trí…"
+              : locationPermission.granted
+                ? "Báo cáo sẽ đính kèm vị trí hiện tại."
+                : locationPermission.requesting
+                  ? "Đang xin quyền vị trí…"
+                  : "Chưa cấp quyền vị trí — chạm để bật."}
+          </Text>
+        </Pressable>
       </SurfaceCard>
 
+      {submitted ? (
+        // Gửi xong thì thay hẳn form bằng thẻ xác nhận: banner nhỏ dưới đáy card
+        // cũ dễ bị bỏ sót, tài xế không chắc đã gửi được hay chưa.
+        <SurfaceCard delay={120}>
+          <SectionTitle icon="check-circle" title="Đã gửi báo cáo" />
+          <View style={styles.receiptRow}>
+            <StatusChip
+              label={INCIDENT_CATEGORY_META[submitted.category].label}
+              tone="danger"
+            />
+            <StatusChip
+              label={`Lúc ${formatTimeHM(submitted.reportedAt)}`}
+              tone="neutral"
+            />
+            <StatusChip
+              label={
+                submitted.latitude != null && submitted.longitude != null
+                  ? "Có vị trí"
+                  : "Không có vị trí"
+              }
+              tone={
+                submitted.latitude != null && submitted.longitude != null
+                  ? "success"
+                  : "warning"
+              }
+            />
+          </View>
+          <Text style={styles.metaText}>
+            Mã sự cố: {submitted.incidentId.slice(0, 8)}… — điều hành đã nhận
+            được, không cần gửi lại.
+          </Text>
+          <ActionButton
+            icon="add"
+            label="Gửi báo cáo khác"
+            tone="secondary"
+            onPress={() => setSubmitted(null)}
+          />
+        </SurfaceCard>
+      ) : (
       <SurfaceCard delay={120}>
         <SectionTitle icon="warning-amber" title="Loại sự cố" />
 
+        {/* Lưới 2 cột, ô cao 76px: tài xế bấm bằng ngón cái khi xe còn rung xóc,
+            vùng chạm phải vượt 48dp theo chuẩn accessibility. */}
         <View style={styles.categoryWrap}>
-          {INCIDENT_CATEGORIES.map((category) => (
-            <ActionButton
-              key={category}
-              icon={INCIDENT_CATEGORY_META[category].icon}
-              label={INCIDENT_CATEGORY_META[category].label}
-              tone={incidentCategory === category ? "danger" : "secondary"}
-              small
-              onPress={() => setIncidentCategory(category)}
-            />
-          ))}
+          {INCIDENT_CATEGORIES.map((category) => {
+            const selected = incidentCategory === category;
+            const meta = INCIDENT_CATEGORY_META[category];
+
+            return (
+              <Pressable
+                key={category}
+                accessibilityRole="button"
+                accessibilityState={{ selected }}
+                accessibilityLabel={meta.label}
+                onPress={() => {
+                  void Haptics.selectionAsync();
+                  // Chạm lại vào loại đang chọn thì bỏ chọn — sửa nhầm không cần
+                  // thoát màn.
+                  setIncidentCategory((current) =>
+                    current === category ? null : category,
+                  );
+                }}
+                style={({ pressed }) => [
+                  styles.categoryTile,
+                  selected && styles.categoryTileActive,
+                  pressed && styles.categoryTilePressed,
+                ]}
+              >
+                <MaterialIcons
+                  name={meta.icon}
+                  size={26}
+                  color={selected ? theme.onAccent : theme.text}
+                />
+                <Text
+                  numberOfLines={1}
+                  style={[
+                    styles.categoryLabel,
+                    selected && styles.categoryLabelActive,
+                  ]}
+                >
+                  {meta.label}
+                </Text>
+              </Pressable>
+            );
+          })}
         </View>
 
         <TextInput
           multiline
           numberOfLines={4}
-          maxLength={500}
-          placeholder="Mô tả nhanh tình huống (tối đa 500 ký tự)."
+          maxLength={DESCRIPTION_LIMIT}
+          placeholder="Mô tả nhanh tình huống (không bắt buộc)."
           placeholderTextColor={theme.placeholder}
           style={styles.input}
           value={incidentDescription}
           onChangeText={setIncidentDescription}
         />
 
+        {/* Bộ đếm ký tự: chạm trần thì bàn phím im lặng không nhận nữa, không có
+            số đếm người dùng tưởng máy treo. */}
+        <Text
+          style={[
+            styles.charCounter,
+            incidentDescription.length >= DESCRIPTION_LIMIT * 0.9 &&
+              styles.charCounterNearLimit,
+          ]}
+        >
+          {incidentDescription.length}/{DESCRIPTION_LIMIT}
+        </Text>
+
+        {blockedReason ? (
+          <Text style={styles.metaText}>{blockedReason}</Text>
+        ) : null}
+
         <ActionButton
           icon="send"
           label={incident.isPending ? "Đang gửi…" : "Gửi báo cáo"}
           tone="danger"
-          disabled={!tripId || !tripRunning || incident.isPending}
-          onPress={() => void submit()}
+          disabled={blockedReason != null || incident.isPending}
+          onPress={confirmAndSend}
         />
-
-        {!tripId ? (
-          <Text style={styles.metaText}>
-            Chưa có chuyến nào đang chạy để báo sự cố.
-          </Text>
-        ) : !tripRunning ? (
-          <Text style={styles.metaText}>
-            Chỉ báo được sự cố khi chuyến đang chạy.
-          </Text>
-        ) : null}
 
         {errorMessage ? (
           <Text style={styles.errorText}>{errorMessage}</Text>
         ) : null}
-
-        {submitted ? (
-          <View style={styles.scanBanner}>
-            <StatusChip label="Đã gửi báo cáo" tone="success" />
-            <Text style={styles.feedbackText}>
-              {INCIDENT_CATEGORY_META[submitted.category].label} • lúc{" "}
-              {formatTimeHM(submitted.reportedAt)}
-              {submitted.latitude != null && submitted.longitude != null
-                ? " • đã đính kèm vị trí"
-                : " • không có vị trí"}
-            </Text>
-          </View>
-        ) : null}
       </SurfaceCard>
+      )}
     </OperationsScreen>
   );
 }
@@ -2608,6 +2754,48 @@ const makeStyles = (c: Palette) =>
     flexWrap: "wrap",
     gap: Spacing.two,
   },
+  categoryTile: {
+    // "48%" + gap: đúng 2 cột, ô lẻ cuối cùng nằm một mình bên trái.
+    width: "48%",
+    height: 76,
+    borderRadius: 20,
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 4,
+    backgroundColor: c.tones.neutral.background,
+    borderWidth: 1,
+    borderColor: c.border,
+  },
+  categoryTileActive: {
+    backgroundColor: c.danger,
+    borderColor: c.danger,
+  },
+  categoryTilePressed: {
+    opacity: 0.7,
+  },
+  categoryLabel: {
+    color: c.text,
+    fontFamily: Fonts.rounded,
+    fontSize: 13,
+    fontWeight: 700,
+  },
+  categoryLabelActive: {
+    color: c.onAccent,
+  },
+  charCounter: {
+    alignSelf: "flex-end",
+    color: c.textSecondary,
+    fontFamily: Fonts.mono,
+    fontSize: 12,
+  },
+  charCounterNearLimit: {
+    color: c.tones.warning.text,
+  },
+  receiptRow: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: Spacing.two,
+  },
   input: {
     minHeight: 116,
     borderRadius: 20,
@@ -2884,7 +3072,8 @@ const makeStyles = (c: Palette) =>
     borderRadius: 18,
     borderWidth: 1,
     borderColor: c.border,
-    backgroundColor: c.surface,
+    // surface = trắng, trùng nền card ở light theme → ô nhập gần như tàng hình.
+    backgroundColor: c.tones.neutral.background,
     paddingHorizontal: Spacing.three,
     paddingVertical: Spacing.two,
     color: c.text,
@@ -2904,17 +3093,24 @@ const makeStyles = (c: Palette) =>
     gap: Spacing.one,
     maxWidth: "92%",
   },
+  // Bong bóng trợ lý: nền trung tính nhạt. Trước dùng surfaceDeep (#D6DDDF ở
+  // light) — xám xịt, nặng nề trên card trắng.
   assistantBubble: {
     alignSelf: "flex-start",
-    backgroundColor: c.surfaceDeep,
+    backgroundColor: c.tones.neutral.background,
     borderWidth: 1,
-    borderColor: c.border,
+    borderColor: c.tones.neutral.border,
+    // Bo góc phía người nói nhỏ lại cho ra dáng bong bóng chat.
+    borderBottomLeftRadius: 8,
   },
+  // Bong bóng của mình: mint rõ (light #CFEDEB) / teal đậm (dark #113F3A) để
+  // tách hẳn khỏi bên trợ lý, thay cho lớp phủ 16% quá nhạt.
   userBubble: {
     alignSelf: "flex-end",
-    backgroundColor: c.tones.primary.background,
+    backgroundColor: c.primaryMuted,
     borderWidth: 1,
     borderColor: c.tones.primary.border,
+    borderBottomRightRadius: 8,
   },
   messageSpeaker: {
     color: c.textSecondary,
