@@ -43,12 +43,6 @@ const TAB_CONFIG: Record<TabVariant, TabItem[]> = {
       label: "Hỗ trợ",
       icon: "support-agent",
     },
-    {
-      name: "settings",
-      href: "/driver/settings",
-      label: "Cài đặt",
-      icon: "settings",
-    },
   ],
   assistant: [
     {
@@ -70,12 +64,6 @@ const TAB_CONFIG: Record<TabVariant, TabItem[]> = {
       href: "/assistant/support",
       label: "Hỗ trợ",
       icon: "support-agent",
-    },
-    {
-      name: "settings",
-      href: "/assistant/settings",
-      label: "Cài đặt",
-      icon: "settings",
     },
   ],
 };
@@ -138,7 +126,12 @@ function TabButton({
     >
       <View style={[styles.pill, isFocused && styles.pillActive]}>
         <MaterialIcons name={icon} size={22} color={color} />
-        <Text numberOfLines={1} style={[styles.label, { color }]}>
+        <Text
+          numberOfLines={1}
+          adjustsFontSizeToFit
+          minimumFontScale={0.8}
+          style={[styles.label, { color }]}
+        >
           {label}
         </Text>
       </View>
@@ -182,9 +175,11 @@ const makeStyles = (c: Palette) =>
       opacity: 0.7,
     },
     pill: {
+      alignSelf: "stretch",
       alignItems: "center",
       gap: 3,
-      paddingHorizontal: 14,
+      // Padding hẹp để nhãn dài ("Lịch làm việc") không bị cắt khi có 5 tab.
+      paddingHorizontal: 4,
       paddingVertical: 7,
       borderRadius: 22,
       // Ép clip để Android không "mất" bo góc khi re-render lúc chuyển tab

@@ -22,6 +22,8 @@ export default function AssistantLayout() {
       {/* Màn Báo sự cố tự dựng nút back trong OperationsScreen (giống notifications),
           nên tắt native header để tránh chồng khoảng đệm safe-area gây dải trống. */}
       <Stack.Screen name="incident" />
+      {/* Cài đặt nằm ngoài tab bar (mở từ nút bánh răng góc phải header). */}
+      <Stack.Screen name="settings" />
     </Stack>
   );
 }

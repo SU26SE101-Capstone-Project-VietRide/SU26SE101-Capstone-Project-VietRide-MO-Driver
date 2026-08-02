@@ -20,18 +20,22 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { BottomTabInset, Fonts, Spacing, type Palette } from "@/constants/theme";
 import { type Tone } from "@/features/operations/mock-data";
+import { useSession } from "@/features/session/session-context";
 import { useTheme, useThemedStyles } from "@/hooks/use-theme";
 
 type MaterialIconName = ComponentProps<typeof MaterialIcons>["name"];
 
 export function OperationsScreen({
   children,
+  headerLeft,
   headerRight,
   onBack,
   onRefresh,
   subtitle,
   title,
 }: PropsWithChildren<{
+  // Hàng nút trên cùng: back + chuông bên trái, bánh răng Cài đặt bên phải.
+  headerLeft?: ReactNode;
   headerRight?: ReactNode;
   onBack?: () => void;
   // Kéo xuống để tải lại dữ liệu màn hình (BE không push realtime cho manifest/
@@ -45,6 +49,21 @@ export function OperationsScreen({
   const theme = useTheme();
   const styles = useThemedStyles(makeStyles);
   const [refreshing, setRefreshing] = useState(false);
+  const { role } = useSession();
+  // Mỗi vai trò một nhãn + màu riêng để tài xế và phụ xe nhìn là biết đang ở
+  // app nào, thay cho dòng "VietRide Operations" chung chung.
+  const roleBadge =
+    role === "ASSISTANT"
+      ? {
+          label: "Phụ xe",
+          icon: "groups" as MaterialIconName,
+          color: theme.tones.info.text,
+        }
+      : {
+          label: "Tài xế",
+          icon: "directions-bus" as MaterialIconName,
+          color: theme.tones.primary.text,
+        };
 
   const handleRefresh = useCallback(() => {
     if (!onRefresh) {
@@ -83,28 +102,51 @@ export function OperationsScreen({
         ]}
       >
         <View style={styles.pageHeader}>
-          {onBack ? (
-            <Pressable
-              accessibilityRole="button"
-              accessibilityLabel="Quay lại"
-              hitSlop={8}
-              onPress={onBack}
-              style={styles.backButton}
-            >
-              <MaterialIcons name="arrow-back" size={22} color={theme.text} />
-            </Pressable>
-          ) : null}
+          {/* Nhãn vai trò nằm chung hàng với nút chuông/cài đặt để không chừa
+              khoảng trống bên trái, tiêu đề tụt xuống ngay dưới. */}
           <View style={styles.pageHeaderTop}>
-            <View style={styles.pageHeaderTitles}>
-              <Text style={styles.pageEyebrow}>VietRide Operations</Text>
-              <Text style={styles.pageTitle}>{title}</Text>
+            {onBack ? (
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel="Quay lại"
+                hitSlop={8}
+                onPress={onBack}
+                style={styles.backButton}
+              >
+                <MaterialIcons name="arrow-back" size={22} color={theme.text} />
+              </Pressable>
+            ) : null}
+            {headerLeft}
+            <View style={styles.pageBadge}>
+              <MaterialIcons
+                name={roleBadge.icon}
+                size={14}
+                color={roleBadge.color}
+              />
+              <Text style={[styles.pageEyebrow, { color: roleBadge.color }]}>
+                {roleBadge.label}
+              </Text>
             </View>
-            {headerRight}
+            <View style={styles.pageHeaderActions}>{headerRight}</View>
+          </View>
+          <View style={styles.pageHeaderTitles}>
+            <Text style={styles.pageTitle}>{title}</Text>
           </View>
           <Text style={styles.pageSubtitle}>{subtitle}</Text>
         </View>
         {children}
       </ScrollView>
+
+      {/* Android bật edge-to-edge nên nội dung cuộn lên sẽ chạy dưới thanh
+          trạng thái (giờ/pin/sóng đè lên chữ). Dải này che đúng chiều cao safe
+          area trên cùng, vẽ đè lên ScrollView. */}
+      <View
+        pointerEvents="none"
+        style={[
+          styles.statusBarScrim,
+          { height: insets.top, backgroundColor: theme.background },
+        ]}
+      />
     </View>
   );
 }
@@ -120,7 +162,11 @@ export function SurfaceCard({
 
   return (
     <Animated.View
-      entering={FadeInDown.delay(delay).springify().damping(18)}
+      // Fade + trượt lên 10px trong 220ms. Trước dùng springify() nên card nảy
+      // lên xuống mỗi lần đổi màn, nhìn giật; bỏ spring cho mượt.
+      entering={FadeInDown.delay(delay).duration(220).withInitialValues({
+        transform: [{ translateY: 10 }],
+      })}
       style={[
         styles.card,
         {
@@ -371,6 +417,12 @@ const makeStyles = (c: Palette) =>
       borderRadius: 999,
       backgroundColor: "rgba(53, 194, 255, 0.08)",
     },
+    statusBarScrim: {
+      position: "absolute",
+      top: 0,
+      left: 0,
+      right: 0,
+    },
     pageHeader: {
       gap: Spacing.one,
       marginBottom: Spacing.one,
@@ -381,23 +433,38 @@ const makeStyles = (c: Palette) =>
       borderRadius: 14,
       alignItems: "center",
       justifyContent: "center",
-      backgroundColor: c.tones.neutral.background,
+      backgroundColor: c.backgroundElement,
       borderWidth: 1,
       borderColor: c.border,
-      marginBottom: Spacing.one,
     },
     pageHeaderTop: {
       flexDirection: "row",
-      alignItems: "flex-start",
-      justifyContent: "space-between",
+      alignItems: "center",
       gap: Spacing.two,
+      marginBottom: Spacing.one,
+    },
+    pageHeaderActions: {
+      flexDirection: "row",
+      alignItems: "center",
+      gap: Spacing.two,
+      // Đẩy cụm nút về sát mép phải, nhãn vai trò giữ chỗ bên trái.
+      marginLeft: "auto",
+    },
+    pageBadge: {
+      flexDirection: "row",
+      alignItems: "center",
+      gap: 6,
+      paddingHorizontal: 12,
+      paddingVertical: 8,
+      borderRadius: 999,
+      backgroundColor: c.backgroundElement,
+      borderWidth: 1,
+      borderColor: c.border,
     },
     pageHeaderTitles: {
-      flex: 1,
       gap: Spacing.one,
     },
     pageEyebrow: {
-      color: c.primary,
       fontFamily: Fonts.mono,
       fontSize: 12,
       letterSpacing: 1.2,
@@ -497,6 +564,8 @@ const makeStyles = (c: Palette) =>
     },
     statusChip: {
       alignSelf: "flex-start",
+      // Không để chip bị bóp méo khi nằm cạnh khối chữ dài.
+      flexShrink: 0,
       borderRadius: 999,
       borderWidth: 1,
       paddingHorizontal: 10,

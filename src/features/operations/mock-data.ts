@@ -116,7 +116,10 @@ export type ScheduleKind = "past" | "active" | "upcoming";
 export type ScheduleEntry = {
   id: string;
   date: string; // YYYY-MM-DD (giờ địa phương)
-  routeName: string;
+  // Tách điểm đi/điểm đến thay vì một chuỗi "A → B": mũi tên luôn nằm đầu dòng
+  // thứ hai nên layout không đổi theo độ dài tên bến.
+  originName: string;
+  destinationName: string;
   window: string;
   vehicleLabel: string;
   statusLabel: string;

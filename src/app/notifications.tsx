@@ -21,6 +21,7 @@ import {
     notificationToneOf,
 } from "@/features/notifications/notification-format";
 import {
+    useMarkAllNotificationsReadMutation,
     useMarkNotificationReadMutation,
     useNotificationList,
     useUnreadNotificationsCount,
@@ -58,6 +59,7 @@ export default function NotificationsScreen() {
   const listQuery = useNotificationList({ page });
   const unreadNotificationsCount = useUnreadNotificationsCount();
   const markRead = useMarkNotificationReadMutation();
+  const markAllRead = useMarkAllNotificationsReadMutation();
   const queryClient = useQueryClient();
 
   // Kéo xuống để tải lại danh sách + badge chưa đọc (invalidate cả nhóm
@@ -88,13 +90,16 @@ export default function NotificationsScreen() {
     [listQuery.data, now],
   );
 
-  // API không có endpoint "đọc tất cả" → PATCH song song các item chưa đọc
-  // của trang hiện tại.
+  // API không có endpoint "đọc tất cả" → gửi song song các item chưa đọc của
+  // trang hiện tại, cache đổi ngay nên UI không phải chờ mạng.
   const handleMarkAllRead = () => {
-    const unreadItems = (listQuery.data?.items ?? []).filter(
-      (item) => item.readAt == null,
-    );
-    unreadItems.forEach((item) => markRead.mutate(item.id));
+    const unreadIds = (listQuery.data?.items ?? [])
+      .filter((item) => item.readAt == null)
+      .map((item) => item.id);
+
+    if (unreadIds.length > 0) {
+      markAllRead.mutate(unreadIds);
+    }
   };
 
   // Danh sách bộ lọc = "Tất cả" + các loại (badge) duy nhất theo thứ tự xuất hiện.
@@ -223,9 +228,9 @@ export default function NotificationsScreen() {
             return (
               <Animated.View
                 key={notification.id}
-                entering={FadeInDown.delay(index * 60)
-                  .springify()
-                  .damping(18)}
+                entering={FadeInDown.delay(index * 40)
+                  .duration(220)
+                  .withInitialValues({ transform: [{ translateY: 10 }] })}
               >
                 <Pressable
                   accessibilityRole="button"
@@ -350,7 +355,7 @@ const makeStyles = (c: Palette) =>
       borderRadius: 14,
       alignItems: "center",
       justifyContent: "center",
-      backgroundColor: c.tones.neutral.background,
+      backgroundColor: c.backgroundElement,
       borderWidth: 1,
       borderColor: c.border,
     },

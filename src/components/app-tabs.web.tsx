@@ -21,7 +21,6 @@ const WEB_TABS = {
     { name: "trip", label: "Chuyến", href: "/driver/trip" },
     { name: "incident", label: "Sự cố", href: "/driver/incident" },
     { name: "support", label: "Hỗ trợ", href: "/driver/support" },
-    { name: "settings", label: "Cài đặt", href: "/driver/settings" },
   ],
   assistant: [
     { name: "overview", label: "Lịch làm việc", href: "/assistant" },
@@ -29,7 +28,6 @@ const WEB_TABS = {
     { name: "cargo", label: "Hàng hóa", href: "/assistant/cargo" },
     { name: "stops", label: "Điểm dừng", href: "/assistant/stops" },
     { name: "support", label: "Hỗ trợ", href: "/assistant/support" },
-    { name: "settings", label: "Cài đặt", href: "/assistant/settings" },
   ],
 } as const;
 

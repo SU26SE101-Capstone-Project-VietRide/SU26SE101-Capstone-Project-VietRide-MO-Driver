@@ -78,7 +78,10 @@ import {
   useReweighParcel,
   useUnloadParcel,
 } from "@/features/parcels/use-parcels";
-import { useAuthenticatedSession } from "@/features/session/session-context";
+import {
+  useAuthenticatedSession,
+  useSession,
+} from "@/features/session/session-context";
 import {
   firstErrorMessage,
   tripOpsErrorMessage,
@@ -161,7 +164,12 @@ export function DriverOverviewScreen() {
     <OperationsScreen
       title="Lịch làm việc"
       subtitle={displayName}
-      headerRight={<NotificationBell />}
+      headerRight={
+        <>
+          <NotificationBell />
+          <SettingsButton />
+        </>
+      }
       // Query lịch nằm trong WorkScheduleSection → refetch qua invalidate.
       onRefresh={() =>
         queryClient.invalidateQueries({ queryKey: ["schedule"] })
@@ -181,7 +189,12 @@ export function AssistantOverviewScreen() {
     <OperationsScreen
       title="Lịch làm việc"
       subtitle={displayName}
-      headerRight={<NotificationBell />}
+      headerRight={
+        <>
+          <NotificationBell />
+          <SettingsButton />
+        </>
+      }
       onRefresh={() =>
         queryClient.invalidateQueries({ queryKey: ["schedule"] })
       }
@@ -233,7 +246,12 @@ export function DriverTripScreen() {
     <OperationsScreen
       title="Chuyến đang chạy"
       subtitle={details?.originStation?.name ?? "Chuyến của bạn hôm nay"}
-      headerRight={<NotificationBell />}
+      headerRight={
+        <>
+          <NotificationBell />
+          <SettingsButton />
+        </>
+      }
       onRefresh={() =>
         Promise.all([
           activeTrip.refetch(),
@@ -452,7 +470,12 @@ function IncidentReportScreen({
       title="Báo sự cố"
       subtitle={subtitle}
       onBack={onBack}
-      headerRight={<NotificationBell />}
+      headerRight={
+        <>
+          <NotificationBell />
+          <SettingsButton />
+        </>
+      }
     >
       <SurfaceCard accent delay={0}>
         <SectionTitle
@@ -610,7 +633,12 @@ export function AssistantBoardingScreen() {
           ? `Khởi hành ${formatTimeHM(activeTrip.trip.departureDateTime)}`
           : "Chưa có chuyến hôm nay"
       }
-      headerRight={<NotificationBell />}
+      headerRight={
+        <>
+          <NotificationBell />
+          <SettingsButton />
+        </>
+      }
       // Khách đặt vé mới không có push cho manifest → kéo xuống để cập nhật.
       onRefresh={() =>
         Promise.all([
@@ -887,7 +915,12 @@ export function AssistantCargoScreen() {
     <OperationsScreen
       title="Hàng ký gửi"
       subtitle="Nhận, dỡ và giao kiện hàng của chuyến."
-      headerRight={<NotificationBell />}
+      headerRight={
+        <>
+          <NotificationBell />
+          <SettingsButton />
+        </>
+      }
       // Kiện có thể đổi trạng thái từ nơi khác (khách trả tiền, operator xử lý)
       // → kéo xuống để đồng bộ, tránh bấm nút trên trạng thái cũ dính 409.
       onRefresh={() =>
@@ -1322,7 +1355,12 @@ export function AssistantStopsScreen() {
     <OperationsScreen
       title="Điểm dừng và giờ đến"
       subtitle={details?.originStation?.name ?? "Chuyến của bạn hôm nay"}
-      headerRight={<NotificationBell />}
+      headerRight={
+        <>
+          <NotificationBell />
+          <SettingsButton />
+        </>
+      }
       onRefresh={() =>
         Promise.all([
           activeTrip.refetch(),
@@ -1551,7 +1589,12 @@ export function CrewSupportScreen() {
     <OperationsScreen
       title="Hỗ trợ vận hành"
       subtitle={`Trợ giúp cho ${roleLabel}`}
-      headerRight={<NotificationBell />}
+      headerRight={
+        <>
+          <NotificationBell />
+          <SettingsButton />
+        </>
+      }
     >
       <SurfaceCard accent delay={0}>
         <SectionTitle
@@ -1744,6 +1787,29 @@ export function NotificationBell() {
   );
 }
 
+// Bánh răng Cài đặt gắn góc phải header (đã bỏ khỏi bottom tabs cho đỡ chật).
+// Đích đến phụ thuộc role vì màn Hỗ trợ/Sự cố dùng chung cho tài xế lẫn phụ xe.
+export function SettingsButton() {
+  const styles = useThemedStyles(makeStyles);
+  const theme = useTheme();
+  const router = useRouter();
+  const { role } = useSession();
+
+  return (
+    <Pressable
+      accessibilityRole="button"
+      accessibilityLabel="Cài đặt"
+      hitSlop={8}
+      onPress={() =>
+        router.push(role === "DRIVER" ? "/driver/settings" : "/assistant/settings")
+      }
+      style={styles.bellButton}
+    >
+      <MaterialIcons name="settings" size={22} color={theme.text} />
+    </Pressable>
+  );
+}
+
 // Nhãn thứ trong tuần (tuần bắt đầu Thứ Hai để khớp lịch VN).
 const WEEKDAY_SHORT = ["T2", "T3", "T4", "T5", "T6", "T7", "CN"];
 const WEEKDAY_FULL = [
@@ -1836,15 +1902,15 @@ function WorkScheduleSection({
   const dayEntries: ScheduleEntry[] = dayTrips.map((trip) => {
     const meta = tripStatusMeta(trip.status);
     const details = dayTripDetails.get(trip.tripId);
-    const routeName =
-      details?.originStation?.name && details?.destinationStation?.name
-        ? `${details.originStation.name} → ${details.destinationStation.name}`
-        : "Đang tải tuyến…";
+    const originName = details?.originStation?.name ?? null;
+    const destinationName = details?.destinationStation?.name ?? null;
+    const hasRoute = !!originName && !!destinationName;
 
     return {
       id: trip.tripId,
       date: isoDateOf(new Date(trip.departureDateTime)),
-      routeName,
+      originName: hasRoute ? originName : "Đang tải tuyến…",
+      destinationName: hasRoute ? destinationName : "…",
       window: `${formatTimeHM(trip.departureDateTime)} – ${formatTimeHM(trip.estimatedArrivalTime)}`,
       vehicleLabel: `Vai trò: ${mapAssignmentRoleLabel(trip.assignmentRole)}`,
       statusLabel: meta.label,
@@ -2077,7 +2143,24 @@ function WorkScheduleSection({
               {dayEntries.map((entry) => (
                 <View key={entry.id} style={styles.scheduleEntry}>
                   <View style={styles.scheduleEntryHead}>
-                    <Text style={styles.scheduleRoute}>{entry.routeName}</Text>
+                    {/* Điểm đi ở dòng 1, mũi tên + điểm đến ở dòng 2 — vị trí mũi
+                        tên cố định dù tên bến dài hay ngắn. */}
+                    <View style={styles.scheduleRouteBlock}>
+                      <Text style={styles.scheduleRoute}>
+                        {entry.originName}
+                      </Text>
+                      <View style={styles.scheduleRouteLeg}>
+                        <MaterialIcons
+                          name="subdirectory-arrow-right"
+                          size={16}
+                          color={theme.textSecondary}
+                          style={styles.scheduleRouteArrow}
+                        />
+                        <Text style={styles.scheduleRoute}>
+                          {entry.destinationName}
+                        </Text>
+                      </View>
+                    </View>
                     <StatusChip label={entry.statusLabel} tone={entry.tone} />
                   </View>
                   <View style={styles.metaRow}>
@@ -2278,7 +2361,9 @@ const makeStyles = (c: Palette) =>
     borderRadius: 12,
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: "rgba(148, 163, 174, 0.08)",
+    backgroundColor: c.tones.neutral.background,
+    borderWidth: 1,
+    borderColor: c.border,
   },
   calMonthLabel: {
     color: c.text,
@@ -2342,9 +2427,11 @@ const makeStyles = (c: Palette) =>
     color: c.onAccent,
   },
   dayDot: {
-    width: 5,
-    height: 5,
-    borderRadius: 999,
+    // Android bo góc không chuẩn khi radius >> kích thước → đặt đúng nửa cạnh.
+    width: 6,
+    height: 6,
+    borderRadius: 3,
+    overflow: "hidden",
   },
   dayDotActive: {
     backgroundColor: c.primary,
@@ -2415,9 +2502,27 @@ const makeStyles = (c: Palette) =>
   },
   scheduleEntryHead: {
     flexDirection: "row",
-    alignItems: "center",
+    // Chip trạng thái neo đỉnh để không nhảy khi tên bến xuống 2 dòng.
+    alignItems: "flex-start",
     justifyContent: "space-between",
     gap: Spacing.two,
+  },
+  scheduleRouteBlock: {
+    flex: 1,
+    // minWidth 0: mặc định Yoga không cho flex item co dưới min-content, tên bến
+    // dài sẽ đẩy chip trạng thái tràn ra ngoài card.
+    minWidth: 0,
+    gap: 2,
+  },
+  scheduleRouteLeg: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    minWidth: 0,
+    gap: 6,
+  },
+  scheduleRouteArrow: {
+    // Căn theo baseline dòng chữ 16px thay vì giữa khối text nhiều dòng.
+    marginTop: 3,
   },
   scheduleRoute: {
     flex: 1,
@@ -2827,7 +2932,9 @@ const makeStyles = (c: Palette) =>
     borderRadius: 14,
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: "rgba(148, 163, 174, 0.1)",
+    // Dùng nền element (trắng ở light, xám đậm ở dark) thay cho xám mờ hardcode
+    // — ở light theme màu cũ gần trùng nền nên gần như không thấy nút.
+    backgroundColor: c.backgroundElement,
     borderWidth: 1,
     borderColor: c.border,
   },

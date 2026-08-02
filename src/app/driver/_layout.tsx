@@ -1,6 +1,5 @@
-import { Redirect } from "expo-router";
+import { Redirect, Stack } from "expo-router";
 
-import AppTabs from "@/components/app-tabs";
 import {
     getHomeHrefForRole,
     useSession,
@@ -17,5 +16,12 @@ export default function DriverLayout() {
     return <Redirect href={getHomeHrefForRole(role)} />;
   }
 
-  return <AppTabs variant="driver" />;
+  return (
+    <Stack screenOptions={{ headerShown: false }}>
+      <Stack.Screen name="(tabs)" />
+      {/* Cài đặt nằm ngoài tab bar (mở từ nút bánh răng góc phải header) và tự
+          dựng nút back trong OperationsScreen → tắt native header. */}
+      <Stack.Screen name="settings" />
+    </Stack>
+  );
 }

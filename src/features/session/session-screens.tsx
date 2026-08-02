@@ -169,6 +169,8 @@ export function CrewSettingsScreen() {
     <OperationsScreen
       title="Cài đặt"
       subtitle="Tài khoản và phiên làm việc"
+      // Cài đặt mở từ header nên nằm ngoài tab bar → cần nút quay lại.
+      onBack={() => (router.canGoBack() ? router.back() : router.replace(getHomeHrefForRole(role)))}
       headerRight={<NotificationBell />}
     >
       <SurfaceCard accent delay={0}>
