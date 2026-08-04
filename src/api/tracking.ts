@@ -3,7 +3,21 @@ import type {
   GpsTrailData,
   LatestLocationData,
   TripEtaData,
+  TripRouteGeometryData,
 } from "./types";
+
+// Hình học tuyến + marker bản đồ (Tracking Phase 12). Backend kiểm quyền theo
+// assignment/booking như các endpoint tracking khác nên DRIVER lẫn ASSISTANT
+// được gán chuyến đều gọi được.
+// Polyline trả về đã decode + đơn giản hoá sẵn (tối đa 1.000 điểm) → client
+// không cần giải mã gì thêm.
+export function getTripRouteGeometry(
+  tripId: string,
+): Promise<TripRouteGeometryData> {
+  return apiRequest<TripRouteGeometryData>(
+    `/v1/tracking/trips/${tripId}/route-geometry`,
+  );
+}
 
 // Vị trí mới nhất của trip (Redis). Trả latest = null nếu chưa có điểm hợp lệ.
 export function getLatestLocation(

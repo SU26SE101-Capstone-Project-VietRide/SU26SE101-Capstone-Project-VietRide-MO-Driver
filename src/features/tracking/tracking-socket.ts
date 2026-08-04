@@ -1,7 +1,11 @@
 import { io, type Socket } from "socket.io-client";
 
 import { API_BASE_URL } from "@/api/client";
-import type { GpsUpdatePayload } from "@/api/types";
+import type {
+  EtaUpdateEvent,
+  GpsUpdatePayload,
+  TripStatusChangedEvent,
+} from "@/api/types";
 
 // Socket.IO của Tracking dùng path riêng /tracking/socket.io (không qua Gateway
 // route table; Nginx proxy thẳng tới tracking service). Auth bằng access token raw
@@ -49,4 +53,27 @@ export async function sendGpsUpdate(
     .emitWithAck("gps:update", payload)) as GpsAck;
 
   return ack?.success === true;
+}
+
+// Server broadcast ETA mới vào room trip:<tripId> sau khi tính lại (không phải
+// mỗi điểm GPS đều có — có throttle/cooldown phía backend).
+export function onEtaUpdate(
+  socket: Socket,
+  handler: (event: EtaUpdateEvent) => void,
+): () => void {
+  socket.on("eta:update", handler);
+  return () => {
+    socket.off("eta:update", handler);
+  };
+}
+
+// Server broadcast khi delay detection đánh dấu chuyến trễ.
+export function onTripStatusChanged(
+  socket: Socket,
+  handler: (event: TripStatusChangedEvent) => void,
+): () => void {
+  socket.on("trip:statusChanged", handler);
+  return () => {
+    socket.off("trip:statusChanged", handler);
+  };
 }

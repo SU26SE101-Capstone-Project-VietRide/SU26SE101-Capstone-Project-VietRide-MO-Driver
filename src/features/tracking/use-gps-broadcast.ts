@@ -1,13 +1,27 @@
+import { useQueryClient } from "@tanstack/react-query";
 import * as Location from "expo-location";
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { Socket } from "socket.io-client";
 
 import { getTokens } from "@/api/token-storage";
-import type { GpsUpdatePayload } from "@/api/types";
+import type {
+  EtaUpdateEvent,
+  GeoPoint,
+  GpsUpdatePayload,
+  TripEtaData,
+  TripStatusChangedEvent,
+} from "@/api/types";
 
+import {
+  FAKE_GPS_ENABLED,
+  fakeGpsSpeedKmh,
+  positionAlongPath,
+} from "./fake-gps-route";
 import {
   createTrackingSocket,
   joinTripTracking,
+  onEtaUpdate,
+  onTripStatusChanged,
   sendGpsUpdate,
 } from "./tracking-socket";
 
@@ -55,18 +69,44 @@ function toGpsPayload(
   return payload;
 }
 
-// Phát GPS realtime khi tài xế/phụ xe đang mở màn chuyến (foreground).
+// Phát GPS realtime khi tài xế/phụ xe đang mở màn chuyến (foreground), đồng
+// thời nghe ETA và cảnh báo trễ mà server broadcast vào cùng room.
 // enabled=false hoặc tripId=null thì dừng và dọn dẹp.
-export function useGpsBroadcast(tripId: string | null, enabled: boolean) {
+// `simulationPath` chỉ dùng khi bật cờ demo EXPO_PUBLIC_FAKE_GPS.
+export function useGpsBroadcast(
+  tripId: string | null,
+  enabled: boolean,
+  simulationPath: GeoPoint[] = [],
+) {
   const [status, setStatus] = useState<GpsBroadcastStatus>("idle");
-  // TODO(debug): thông tin chẩn đoán tạm, xóa sau khi xong
-  const [debug, setDebug] = useState<string>("");
+  // Sự kiện trip:statusChanged gần nhất (chỉ phát khi chuyến bị đánh dấu trễ).
+  const [delay, setDelay] = useState<TripStatusChangedEvent | null>(null);
+  // ETA gần nhất server đẩy về. Giữ riêng vì server tự chọn stop kế tiếp theo
+  // guard của nó (bỏ stop ARRIVED/SKIPPED, không lùi sequence, bỏ stop cách
+  // dưới 50 m) — không chắc trùng stop mà app đoán từ danh sách điểm dừng.
+  const [lastEta, setLastEta] = useState<EtaUpdateEvent | null>(null);
   const socketRef = useRef<Socket | null>(null);
   const watchRef = useRef<Location.LocationSubscription | null>(null);
+  const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const unsubscribeRef = useRef<(() => void) | null>(null);
+  const queryClient = useQueryClient();
+
+  // Giữ đường mô phỏng trong ref để tuyến tải xong không làm effect chạy lại
+  // (chạy lại = ngắt và nối lại socket giữa chừng).
+  const simulationPathRef = useRef<GeoPoint[]>(simulationPath);
+  useEffect(() => {
+    simulationPathRef.current = simulationPath;
+  }, [simulationPath]);
 
   const cleanup = useCallback(() => {
     watchRef.current?.remove();
     watchRef.current = null;
+    if (timerRef.current) {
+      clearInterval(timerRef.current);
+      timerRef.current = null;
+    }
+    unsubscribeRef.current?.();
+    unsubscribeRef.current = null;
     socketRef.current?.disconnect();
     socketRef.current = null;
   }, []);
@@ -80,30 +120,29 @@ export function useGpsBroadcast(tripId: string | null, enabled: boolean) {
         cleanup();
         if (!cancelled) {
           setStatus("idle");
-          setDebug(
-            `idle: flag=${TRACKING_ENABLED} enabled=${enabled} trip=${tripId ?? "null"}`,
-          );
         }
         return;
       }
 
-      setStatus("requesting-permission");
-      const permission = await Location.requestForegroundPermissionsAsync();
+      // Chế độ demo không đọc GPS thiết bị nên bỏ luôn bước xin quyền vị trí.
+      if (!FAKE_GPS_ENABLED) {
+        setStatus("requesting-permission");
+        const permission = await Location.requestForegroundPermissionsAsync();
 
-      if (cancelled) {
-        return;
-      }
+        if (cancelled) {
+          return;
+        }
 
-      if (!permission.granted) {
-        setStatus("denied");
-        return;
+        if (!permission.granted) {
+          setStatus("denied");
+          return;
+        }
       }
 
       const tokens = await getTokens();
       if (cancelled || !tokens) {
         if (!cancelled) {
           setStatus("error");
-          setDebug("error: no tokens");
         }
         return;
       }
@@ -112,12 +151,49 @@ export function useGpsBroadcast(tripId: string | null, enabled: boolean) {
       const socket = createTrackingSocket(tokens.accessToken);
       socketRef.current = socket;
 
-      socket.on("connect_error", (err) => {
-        // TODO(debug): log tạm để chẩn đoán lỗi kết nối tracking, xóa sau khi xong
-        console.log("[gps-broadcast] connect_error:", err?.message, err);
+      // Nghe broadcast của room. Đăng ký ngay từ đầu để không lỡ sự kiện bắn
+      // ra sát lúc join xong.
+      const offEta = onEtaUpdate(socket, (event) => {
+        // Server tự chọn stop kế tiếp nên stopId có thể khác stop app đang xem;
+        // ghi đúng theo stopId trong payload, để React Query tự khớp màn hình.
+        if (event?.tripId !== tripId || !event.stopId) {
+          return;
+        }
+
+        if (!cancelled) {
+          setLastEta(event);
+        }
+
+        queryClient.setQueryData<TripEtaData>(
+          ["tracking-eta", tripId, event.stopId],
+          {
+            eta: {
+              tripId: event.tripId,
+              stopId: event.stopId,
+              etaMinutes: event.etaMinutes,
+              estimatedArrivalTime: event.estimatedArrivalTime,
+              distanceMeters: event.distanceMeters,
+              updatedAt: event.updatedAt,
+            },
+          },
+        );
+      });
+
+      const offStatus = onTripStatusChanged(socket, (event) => {
+        if (event?.tripId !== tripId || cancelled) {
+          return;
+        }
+        setDelay(event);
+      });
+
+      unsubscribeRef.current = () => {
+        offEta();
+        offStatus();
+      };
+
+      socket.on("connect_error", () => {
         if (!cancelled) {
           setStatus("error");
-          setDebug(`connect_error: ${err?.message ?? String(err)}`);
         }
       });
 
@@ -129,39 +205,74 @@ export function useGpsBroadcast(tripId: string | null, enabled: boolean) {
               return;
             }
 
-            watchRef.current = await Location.watchPositionAsync(
-              {
-                accuracy: Location.Accuracy.High,
-                timeInterval: GPS_TIME_INTERVAL_MS,
-                distanceInterval: GPS_DISTANCE_INTERVAL_M,
-              },
-              (location) => {
-                // Fire-and-forget từng điểm; lỗi ack chỉ chuyển trạng thái, không throw.
-                void sendGpsUpdate(
-                  socket,
-                  toGpsPayload(tripId, location),
-                ).catch(() => {
+            if (FAKE_GPS_ENABLED) {
+              // Demo: tự đi dọc tuyến thay vì đọc GPS thiết bị.
+              const speedKmh = fakeGpsSpeedKmh();
+              const stepMeters = (speedKmh / 3.6) * (GPS_TIME_INTERVAL_MS / 1000);
+              let traveledMeters = 0;
+
+              timerRef.current = setInterval(() => {
+                const position = positionAlongPath(
+                  simulationPathRef.current,
+                  traveledMeters,
+                );
+
+                // Tuyến chưa tải xong thì chờ nhịp sau, chưa cộng quãng đường.
+                if (!position) {
+                  return;
+                }
+
+                void sendGpsUpdate(socket, {
+                  tripId,
+                  latitude: position.latitude,
+                  longitude: position.longitude,
+                  speedKmh: position.finished ? 0 : speedKmh,
+                  headingDeg: position.headingDeg,
+                  recordedAt: new Date().toISOString(),
+                }).catch(() => {
                   /* bỏ qua lỗi 1 điểm, tiếp tục phát điểm sau */
                 });
-              },
-            );
+
+                if (!position.finished) {
+                  traveledMeters += stepMeters;
+                }
+              }, GPS_TIME_INTERVAL_MS);
+            } else {
+              watchRef.current = await Location.watchPositionAsync(
+                {
+                  accuracy: Location.Accuracy.High,
+                  timeInterval: GPS_TIME_INTERVAL_MS,
+                  distanceInterval: GPS_DISTANCE_INTERVAL_M,
+                },
+                (location) => {
+                  // Fire-and-forget từng điểm; lỗi ack chỉ chuyển trạng thái, không throw.
+                  void sendGpsUpdate(
+                    socket,
+                    toGpsPayload(tripId, location),
+                  ).catch(() => {
+                    /* bỏ qua lỗi 1 điểm, tiếp tục phát điểm sau */
+                  });
+                },
+              );
+            }
 
             if (cancelled) {
-              // Nếu bị hủy ngay sau khi tạo watch, dọn luôn.
+              // Nếu bị hủy ngay sau khi tạo watch/timer, dọn luôn.
               watchRef.current?.remove();
               watchRef.current = null;
+              if (timerRef.current) {
+                clearInterval(timerRef.current);
+                timerRef.current = null;
+              }
               return;
             }
 
             setStatus("tracking");
           })
-          .catch((err: unknown) => {
-            // TODO(debug): log tạm để chẩn đoán lỗi join room, xóa sau khi xong
-            const msg = err instanceof Error ? err.message : String(err);
-            console.log("[gps-broadcast] join failed:", msg);
+          .catch(() => {
+            // Join bị từ chối (sai scope, trip không tồn tại, provider lỗi).
             if (!cancelled) {
               setStatus("error");
-              setDebug(`join failed: ${msg}`);
             }
           });
       });
@@ -173,8 +284,12 @@ export function useGpsBroadcast(tripId: string | null, enabled: boolean) {
       cancelled = true;
       cleanup();
     };
-  }, [tripId, enabled, cleanup]);
+  }, [tripId, enabled, cleanup, queryClient]);
 
-  // TODO(debug): trả thêm debug tạm thời, xóa sau khi xong
-  return { status, debug };
+  // Lọc theo tripId hiện tại thay vì reset state khi đổi chuyến — tránh
+  // setState trong thân effect, và cảnh báo của chuyến cũ tự hết hiệu lực.
+  const currentDelay = delay?.tripId === tripId ? delay : null;
+  const currentEta = lastEta?.tripId === tripId ? lastEta : null;
+
+  return { status, delay: currentDelay, eta: currentEta };
 }

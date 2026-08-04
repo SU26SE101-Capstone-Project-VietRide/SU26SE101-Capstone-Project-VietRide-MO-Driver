@@ -1,53 +1,25 @@
-import polyline from "@mapbox/polyline";
 import { GoogleMaps } from "expo-maps";
 import { useMemo } from "react";
 import { Platform, Pressable, StyleSheet, Text, View } from "react-native";
 
-import type { TripRouteData } from "@/api/types";
+import type { GeoPoint, TripRouteGeometryData } from "@/api/types";
 import { Spacing, type Palette } from "@/constants/theme";
 import { ActionButton } from "@/features/operations/ui";
 import { useThemedStyles } from "@/hooks/use-theme";
 
-type LatLng = { latitude: number; longitude: number };
-
-// Station có thể thiếu toạ độ (BE cho phép null từng field) → chỉ lấy khi đủ cả 2.
-function stationPoint(station: {
-  latitude: number | null;
-  longitude: number | null;
-}): LatLng | null {
-  if (station.latitude == null || station.longitude == null) {
-    return null;
-  }
-  return { latitude: station.latitude, longitude: station.longitude };
-}
-
-// Đường vẽ: ưu tiên pathPolyline (Google encoded, precision-5). Nếu null →
-// fallback nối waypoint theo thứ tự originStation → stops → destinationStation.
-function buildRouteLine(route: TripRouteData): LatLng[] {
-  if (route.pathPolyline) {
-    try {
-      // polyline.decode trả [[lat, lng], ...]
-      return polyline
-        .decode(route.pathPolyline)
-        .map(([latitude, longitude]) => ({ latitude, longitude }));
-    } catch {
-      // Polyline hỏng → rơi xuống fallback bên dưới.
-    }
-  }
-
-  const origin = stationPoint(route.originStation);
-  const destination = stationPoint(route.destinationStation);
-  const stops = [...route.stops]
-    .sort((a, b) => a.orderIndex - b.orderIndex)
-    .map((stop) => ({ latitude: stop.latitude, longitude: stop.longitude }));
-
-  return [origin, ...stops, destination].filter(
-    (point): point is LatLng => point !== null,
+// Toạ độ hợp lệ mới đưa lên bản đồ. BE đã lọc, nhưng payload lạ (NaN, null lọt
+// qua) sẽ làm expo-maps crash nên vẫn chặn ở client.
+function isValidPoint(point: GeoPoint): boolean {
+  return (
+    Number.isFinite(point.latitude) &&
+    Number.isFinite(point.longitude) &&
+    Math.abs(point.latitude) <= 90 &&
+    Math.abs(point.longitude) <= 180
   );
 }
 
 // Khung nhìn: tâm bounding box + zoom ước lượng theo độ trải của tuyến.
-function cameraFor(points: LatLng[]): { center: LatLng; zoom: number } {
+function cameraFor(points: GeoPoint[]): { center: GeoPoint; zoom: number } {
   if (points.length === 0) {
     // Mặc định về TP.HCM khi chưa có điểm nào.
     return { center: { latitude: 10.7769, longitude: 106.7009 }, zoom: 10 };
@@ -79,7 +51,7 @@ export function TripRouteMap({
   onPress,
   fill = false,
 }: {
-  route: TripRouteData;
+  route: TripRouteGeometryData;
   // false = xem trước trong card: TẮT cử chỉ để không giành scroll với trang.
   // true = toàn màn hình: bật đầy đủ kéo/zoom/xoay.
   interactive?: boolean;
@@ -89,45 +61,53 @@ export function TripRouteMap({
 }) {
   const styles = useThemedStyles(makeStyles);
 
-  const line = useMemo(() => buildRouteLine(route), [route]);
-  const camera = useMemo(() => cameraFor(line), [line]);
+  // geometry = null nghĩa là tuyến chưa có đường đi thật. KHÔNG được nối các
+  // marker lại thành tuyến giả (Tracking Phase 12 cấm) → để mảng rỗng.
+  const line = useMemo(
+    () => (route.geometry?.points ?? []).filter(isValidPoint),
+    [route.geometry],
+  );
 
   const markers = useMemo(() => {
-    const origin = stationPoint(route.originStation);
-    const destination = stationPoint(route.destinationStation);
-
     const items: {
       id: string;
-      coordinates: LatLng;
+      coordinates: GeoPoint;
       title: string;
       snippet?: string;
     }[] = [];
 
-    if (origin) {
+    if (route.originStation && isValidPoint(route.originStation)) {
       items.push({
         id: route.originStation.stationId,
-        coordinates: origin,
+        coordinates: {
+          latitude: route.originStation.latitude,
+          longitude: route.originStation.longitude,
+        },
         title: route.originStation.name,
         snippet: "Điểm đi",
       });
     }
 
-    route.stops
+    route.intermediateStops
       .slice()
-      .sort((a, b) => a.orderIndex - b.orderIndex)
+      .sort((a, b) => a.sequence - b.sequence)
+      .filter(isValidPoint)
       .forEach((stop) => {
         items.push({
           id: stop.stopId,
           coordinates: { latitude: stop.latitude, longitude: stop.longitude },
           title: stop.name,
-          snippet: `Điểm dừng ${stop.orderIndex}`,
+          snippet: `Điểm dừng ${stop.sequence}`,
         });
       });
 
-    if (destination) {
+    if (route.destinationStation && isValidPoint(route.destinationStation)) {
       items.push({
         id: route.destinationStation.stationId,
-        coordinates: destination,
+        coordinates: {
+          latitude: route.destinationStation.latitude,
+          longitude: route.destinationStation.longitude,
+        },
         title: route.destinationStation.name,
         snippet: "Điểm đến",
       });
@@ -135,6 +115,12 @@ export function TripRouteMap({
 
     return items;
   }, [route]);
+
+  // Không có đường thì căn khung theo marker để tài xế vẫn thấy các bến.
+  const camera = useMemo(
+    () => cameraFor(line.length > 0 ? line : markers.map((m) => m.coordinates)),
+    [line, markers],
+  );
 
   // expo-maps chỉ dựng bản đồ native; web chưa hỗ trợ.
   if (Platform.OS === "web") {
@@ -147,7 +133,7 @@ export function TripRouteMap({
     );
   }
 
-  if (line.length === 0) {
+  if (line.length === 0 && markers.length === 0) {
     return (
       <View style={styles.placeholder}>
         <Text style={styles.placeholderText}>
@@ -162,9 +148,11 @@ export function TripRouteMap({
       style={fill ? styles.mapFill : styles.map}
       cameraPosition={{ coordinates: camera.center, zoom: camera.zoom }}
       markers={markers}
-      polylines={[
-        { id: "route", coordinates: line, color: "#02C39A", width: 6 },
-      ]}
+      polylines={
+        line.length > 0
+          ? [{ id: "route", coordinates: line, color: "#02C39A", width: 6 }]
+          : []
+      }
       uiSettings={{
         // Chế độ xem trước: tắt hết cử chỉ để ScrollView của trang cuộn mượt.
         scrollGesturesEnabled: interactive,
@@ -202,9 +190,9 @@ export function TripRouteMap({
         />
       ) : null}
 
-      {!route.pathPolyline ? (
+      {!route.geometry ? (
         <Text style={styles.note}>
-          Tuyến chưa có đường đi thực tế — đang nối tạm qua các điểm dừng.
+          Tuyến chưa có đường đi thực tế — chỉ hiển thị các điểm dừng.
         </Text>
       ) : null}
     </View>

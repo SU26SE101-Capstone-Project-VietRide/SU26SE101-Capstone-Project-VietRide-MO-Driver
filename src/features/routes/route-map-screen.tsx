@@ -14,7 +14,7 @@ import { useActiveTrip } from "@/features/trips/use-trips";
 import { useTheme, useThemedStyles } from "@/hooks/use-theme";
 
 import { TripRouteMap } from "./trip-route-map";
-import { useTripRoute } from "./use-route";
+import { useTripRouteGeometry } from "./use-route";
 
 // Bản đồ toàn màn hình: bật đầy đủ cử chỉ kéo/zoom/xoay (không bị ScrollView giành).
 export function RouteMapScreen() {
@@ -25,7 +25,7 @@ export function RouteMapScreen() {
 
   const activeTrip = useActiveTrip();
   const tripId = activeTrip.trip?.tripId ?? null;
-  const routeQuery = useTripRoute(tripId);
+  const routeQuery = useTripRouteGeometry(tripId);
 
   const handleBack = () => {
     if (router.canGoBack()) {
@@ -60,7 +60,7 @@ export function RouteMapScreen() {
         <MaterialIcons name="arrow-back" size={22} color={theme.text} />
       </Pressable>
 
-      {routeQuery.data && !routeQuery.data.pathPolyline ? (
+      {routeQuery.data && !routeQuery.data.geometry ? (
         <View
           style={[
             styles.noteBanner,
@@ -68,7 +68,7 @@ export function RouteMapScreen() {
           ]}
         >
           <Text style={styles.noteText}>
-            Tuyến chưa có đường đi thực tế — đang nối tạm qua các điểm dừng.
+            Tuyến chưa có đường đi thực tế — chỉ hiển thị các điểm dừng.
           </Text>
         </View>
       ) : null}

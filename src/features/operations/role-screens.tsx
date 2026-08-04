@@ -70,7 +70,7 @@ import {
   sizeCategoryLabel,
 } from "@/features/parcels/parcel-format";
 import { TripRouteMap } from "@/features/routes/trip-route-map";
-import { useTripRoute } from "@/features/routes/use-route";
+import { useTripRouteGeometry } from "@/features/routes/use-route";
 import {
   useAssistantTripParcels,
   useCheckInParcel,
@@ -100,6 +100,7 @@ import {
   useGpsBroadcast,
   type GpsBroadcastStatus,
 } from "@/features/tracking/use-gps-broadcast";
+import { buildSimulationPath } from "@/features/tracking/fake-gps-route";
 import { useTripEta } from "@/features/tracking/use-tracking";
 import { useTheme, useThemedStyles } from "@/hooks/use-theme";
 
@@ -238,14 +239,21 @@ export function DriverTripScreen() {
     const status = normalizeTripStatus(activeTrip.trip?.status);
     return status === "IN_PROGRESS" || status === "BOARDING";
   }, [activeTrip.trip?.status]);
-  const routeQuery = useTripRoute(tripId);
-  const gps = useGpsBroadcast(tripId, tripRunning);
+  const routeQuery = useTripRouteGeometry(tripId);
+  // Chỉ dùng khi bật cờ demo EXPO_PUBLIC_FAKE_GPS; bình thường là mảng rỗng.
+  const simulationPath = useMemo(
+    () => buildSimulationPath(routeQuery.data),
+    [routeQuery.data],
+  );
+  const gps = useGpsBroadcast(tripId, tripRunning, simulationPath);
   // ETA chỉ query khi tính năng tracking đã bật (production socket/REST sẵn sàng).
   const etaQuery = useTripEta(
     TRACKING_ENABLED ? tripId : null,
     nextStop?.stopId ?? null,
   );
-  const eta = etaQuery.data?.eta ?? null;
+  // Ưu tiên ETA server đẩy qua socket (server tự chọn stop kế theo guard của
+  // nó); REST theo stop app đoán chỉ là dự phòng khi socket chưa có sự kiện.
+  const eta = gps.eta ?? etaQuery.data?.eta ?? null;
   const gpsMeta = gpsStatusMeta(gps.status);
 
   return (
@@ -376,7 +384,7 @@ export function DriverTripScreen() {
               <MetricTile
                 icon="gps-fixed"
                 value={gpsMeta.label}
-                hint={gps.debug || "Phát vị trí"}
+                hint="Phát vị trí"
                 tone={gpsMeta.tone}
                 compact
               />
@@ -388,6 +396,11 @@ export function DriverTripScreen() {
                 compact
               />
             </View>
+            {gps.delay ? (
+              <Text style={styles.delayText}>
+                Chuyến đang trễ khoảng {gps.delay.delayMinutes} phút so với lịch.
+              </Text>
+            ) : null}
             {gps.status === "denied" ? (
               <Text style={styles.metaText}>
                 Chưa cấp quyền vị trí nên không thể phát hành trình. Vào Cài đặt để
@@ -2956,6 +2969,12 @@ const makeStyles = (c: Palette) =>
     color: c.textMeta,
     fontSize: 14,
     lineHeight: 20,
+  },
+  delayText: {
+    color: c.warning,
+    fontSize: 14,
+    lineHeight: 20,
+    fontWeight: "600",
   },
   parcelCard: {
     borderRadius: 22,

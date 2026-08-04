@@ -394,35 +394,36 @@ export type RagFeedbackData = {
 
 // ===== Route (vẽ tuyến trên bản đồ) =====
 
-// Toạ độ station CÓ THỂ null (từng field độc lập) → luôn lọc trước khi vẽ.
-export type RouteStation = {
-  stationId: string;
-  name: string;
-  latitude: number | null;
-  longitude: number | null;
-};
+export type GeoPoint = { latitude: number; longitude: number };
 
-// Toạ độ stop non-null theo domain BE.
-export type RouteStop = {
-  stopId: string;
+// Marker bến (đầu/cuối). BE chỉ trả marker khi toạ độ hợp lệ, thiếu thì trả null
+// nguyên object → luôn kiểm tra null trước khi dùng.
+export type RouteGeometryStation = {
+  stationId: string;
   name: string;
   latitude: number;
   longitude: number;
-  orderIndex: number;
-  estimatedArrivalTime: string;
-  allowPickup: boolean;
-  allowDropoff: boolean;
 };
 
-// GET /v1/driver/trips/{tripId}/route — dùng chung cho DRIVER và ASSISTANT.
-// pathPolyline null = operator chưa vẽ hình học tuyến → app fallback nối qua stops.
-export type TripRouteData = {
+// Điểm dừng dọc đường. `sequence` là thứ tự hiển thị do BE cấp.
+export type RouteGeometryStop = {
+  stopId: string;
+  name: string;
+  sequence: number;
+  latitude: number;
+  longitude: number;
+};
+
+// GET /v1/tracking/trips/{tripId}/route-geometry — map context công khai của
+// Tracking (Phase 12), dùng chung cho DRIVER và ASSISTANT được gán chuyến.
+// QUAN TRỌNG: geometry = null nghĩa là tuyến CHƯA có đường đi thật; doc cấm
+// client tự nối các marker thành tuyến giả — chỉ được hiện marker.
+export type TripRouteGeometryData = {
   tripId: string;
-  routeId: string;
-  pathPolyline: string | null;
-  originStation: RouteStation;
-  destinationStation: RouteStation;
-  stops: RouteStop[];
+  geometry: { source: "ROUTE_POLYLINE"; points: GeoPoint[] } | null;
+  originStation: RouteGeometryStation | null;
+  intermediateStops: RouteGeometryStop[];
+  destinationStation: RouteGeometryStation | null;
 };
 
 // ===== Tracking =====
@@ -484,6 +485,20 @@ export type GpsUpdatePayload = {
   speedKmh?: number;
   headingDeg?: number;
   recordedAt: string;
+};
+
+// Broadcast eta:update — server đẩy sau mỗi lần tính lại ETA. Giống TripEta của
+// REST nhưng có thêm cờ `delayed`; stopId do server chọn, KHÔNG chắc trùng stop
+// mà app đang hiển thị.
+export type EtaUpdateEvent = TripEta & { delayed?: boolean };
+
+// Broadcast trip:statusChanged — hiện chỉ phát khi delay detection đánh dấu trễ.
+export type TripStatusChangedEvent = {
+  tripId: string;
+  stopId: string;
+  status: string;
+  delayMinutes: number;
+  updatedAt: string;
 };
 
 // ===== Notification (prefix /v1) =====
