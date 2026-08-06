@@ -373,6 +373,20 @@ export function DriverTripScreen() {
             ) : null}
           </SurfaceCard>
 
+          <SurfaceCard delay={30}>
+            <SectionTitle
+              icon="alt-route"
+              title="Đề xuất đổi tuyến"
+              subtitle="Gặp sự cố dọc đường thì đề xuất tuyến thay thế cho điều hành duyệt."
+            />
+            <ActionButton
+              icon="alt-route"
+              label="Mở đề xuất đổi tuyến"
+              tone="secondary"
+              onPress={() => router.push("/route-proposals")}
+            />
+          </SurfaceCard>
+
           {TRACKING_ENABLED ? (
           <SurfaceCard delay={40}>
             <SectionTitle
@@ -1475,6 +1489,7 @@ function ParcelCard({
 export function AssistantStopsScreen() {
   const styles = useThemedStyles(makeStyles);
   const theme = useTheme();
+  const router = useRouter();
   const activeTrip = useActiveTrip();
   const tripId = activeTrip.trip?.tripId ?? null;
   const detailsQuery = useTripDetails(tripId);
@@ -1527,6 +1542,20 @@ export function AssistantStopsScreen() {
         ])
       }
     >
+      <SurfaceCard delay={0}>
+        <SectionTitle
+          icon="alt-route"
+          title="Đề xuất đổi tuyến"
+          subtitle="Đề xuất tuyến thay thế để điều hành duyệt khi đường bị chặn."
+        />
+        <ActionButton
+          icon="alt-route"
+          label="Mở đề xuất đổi tuyến"
+          tone="secondary"
+          onPress={() => router.push("/route-proposals")}
+        />
+      </SurfaceCard>
+
       {activeTrip.isLoading || (tripId && detailsQuery.isLoading) ? (
         <LoadingCard label="Đang tải điểm dừng…" />
       ) : !tripId ? (

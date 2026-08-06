@@ -583,3 +583,120 @@ export type CompleteTripData = {
   status: string;
   completedAt: string;
 };
+
+// ===== Đề xuất đổi tuyến (API driver route change proposals) =====
+
+// Điểm dừng của tuyến thay thế. CHÚ Ý: chỉ có stopId, backend KHÔNG trả tên và
+// toạ độ ở endpoint này → không vẽ được marker trên bản đồ xem trước.
+export type AlternativeRouteStop = {
+  alternativeRouteId: string;
+  stopId: string;
+  orderIndex: number;
+  estimatedDurationFromOriginMinutes: number;
+  distanceFromOriginKm: number | null;
+  createdAt: string;
+  updatedAt: string;
+};
+
+// GET /v1/driver/trips/{tripId}/alternative-routes — tuyến thay thế nhà xe đã
+// cấu hình sẵn cho Route chính của chuyến. Các field số/mô tả có thể null.
+export type AlternativeRoute = {
+  id: string;
+  routeId: string;
+  name: string;
+  description: string | null;
+  destinationStationId: string;
+  totalDistanceKm: number | null;
+  estimatedDurationMinutes: number | null;
+  pathPolyline: string | null;
+  isActive: boolean;
+  stops: AlternativeRouteStop[];
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type AlternativeRoutesData = {
+  items: AlternativeRoute[];
+  page: number;
+  pageSize: number;
+  totalItems: number;
+  totalPages: number;
+  hasNextPage: boolean;
+  hasPreviousPage: boolean;
+};
+
+export type RouteChangeProposalType = "EXISTING" | "CUSTOM";
+
+export type RouteChangeProposalStatus =
+  | "PENDING"
+  | "APPROVED"
+  | "REJECTED"
+  | "SUPERSEDED"
+  | "EXPIRED";
+
+// Lý do hệ thống tự chốt đề xuất (không do admin bấm từ chối).
+export type RouteChangeProposalResolutionCode =
+  | "ANOTHER_PROPOSAL_APPROVED"
+  | "ROUTE_CHANGED_DIRECTLY"
+  | "TRIP_NO_LONGER_EDITABLE"
+  | "SOURCE_ROUTE_CHANGED";
+
+export type RouteChangeProposalStopSnapshot = {
+  stopId: string;
+  orderIndex: number;
+  estimatedDurationFromOriginMinutes: number;
+  distanceFromOriginKm: number | null;
+};
+
+// Ảnh chụp tuyến tại thời điểm gửi đề xuất. Bất biến: KHÔNG fetch lại tuyến gốc
+// để thay thế snapshot khi hiển thị lịch sử (doc mục 4.4).
+export type RouteChangeProposalSnapshot = {
+  name: string;
+  description: string | null;
+  destinationStationId: string;
+  totalDistanceKm: number | null;
+  estimatedDurationMinutes: number | null;
+  pathPolyline: string | null;
+  stops: RouteChangeProposalStopSnapshot[];
+};
+
+export type RouteChangeProposal = {
+  id: string;
+  tripId: string;
+  operatorId: string;
+  proposedByUserId: string;
+  type: RouteChangeProposalType;
+  status: RouteChangeProposalStatus;
+  sourceAlternativeRouteId: string | null;
+  sourceUpdatedAt: string | null;
+  incidentId: string | null;
+  reason: string;
+  snapshot: RouteChangeProposalSnapshot;
+  decidedByUserId: string | null;
+  decidedAt: string | null;
+  rejectionReason: string | null;
+  resolutionCode: RouteChangeProposalResolutionCode | null;
+  supersededByProposalId: string | null;
+  approvedAlternativeRouteId: string | null;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type RouteChangeProposalsData = {
+  items: RouteChangeProposal[];
+  page: number;
+  pageSize: number;
+  totalItems: number;
+  totalPages: number;
+  hasNextPage: boolean;
+  hasPreviousPage: boolean;
+};
+
+// App chỉ gửi type EXISTING. Backend từ chối field lạ (JsonUnmappedMemberHandling
+// .Disallow) nên KHÔNG được đính kèm field UI vào body này.
+export type CreateRouteChangeProposalInput = {
+  type: "EXISTING";
+  alternativeRouteId: string;
+  incidentId: string | null;
+  reason: string;
+};
