@@ -96,7 +96,9 @@ export type ParcelAction =
   | "load"
   | "unload"
   | "deliver"
-  | "confirm-delivery";
+  | "confirm-delivery"
+  | "confirm-transfer"
+  | "resend-email";
 
 export function allowedParcelActions(
   status: string | null | undefined,
@@ -113,7 +115,12 @@ export function allowedParcelActions(
     case "UNLOADED":
       return ["deliver"];
     case "DELIVERED_PENDING_CONFIRM":
-      return ["confirm-delivery"];
+      // resend-email: gửi lại email xác nhận cho người nhận (gia hạn token).
+      return ["confirm-delivery", "resend-email"];
+    // Kiện được operator chuyển sang chuyến này — crew xác nhận đã nhận
+    // (docs/Implements/API-Parcel-QR-Crew.md).
+    case "PENDING_TRANSFER_CONFIRM":
+      return ["confirm-transfer"];
     default:
       // PENDING_FINAL_PAYMENT chờ khách trả qua app khách — Assistant không có
       // thao tác. PENDING/PENDING_ADDITIONAL_PAYMENT là legacy đã được BE

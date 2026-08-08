@@ -20,6 +20,14 @@ export function notificationToneOf(type: string): Tone {
     return "info";
   }
 
+  if (normalized.includes("shuttle")) {
+    // SHUTTLE_WARNING / SHUTTLE_UNFULFILLED cần tone cảnh báo thay vì primary.
+    if (normalized.includes("warning") || normalized.includes("unfulfilled")) {
+      return "warning";
+    }
+    return "primary";
+  }
+
   if (
     normalized.includes("schedule") ||
     normalized.includes("assign") ||

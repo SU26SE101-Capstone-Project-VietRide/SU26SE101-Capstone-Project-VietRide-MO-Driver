@@ -2,9 +2,10 @@ import { MaterialIcons } from "@expo/vector-icons";
 import { useQueryClient } from "@tanstack/react-query";
 import * as Haptics from "expo-haptics";
 import { useRouter } from "expo-router";
-import { useMemo, useState, type ComponentProps } from "react";
+import { useEffect, useMemo, useState, type ComponentProps } from "react";
 import {
     Alert,
+    Image,
     Linking,
     Platform,
     Pressable,
@@ -71,13 +72,22 @@ import {
 } from "@/features/parcels/parcel-format";
 import { TripRouteMap } from "@/features/routes/trip-route-map";
 import { useTripRouteGeometry } from "@/features/routes/use-route";
+import { ShuttleScheduleSection } from "@/features/shuttle/shuttle-schedule-section";
+import { EvidenceCameraModal } from "@/features/parcels/evidence-camera";
+import {
+  MAX_EVIDENCE_PHOTOS,
+  uploadEvidencePhotos,
+} from "@/features/parcels/evidence-upload";
 import {
   useAssistantTripParcels,
   useCheckInParcel,
   useConfirmParcelDelivery,
+  useConfirmParcelTransfer,
   useDeliverParcel,
   useLoadParcel,
+  useResendDeliveryEmail,
   useReweighParcel,
+  useScanParcelQr,
   useUnloadParcel,
 } from "@/features/parcels/use-parcels";
 import {
@@ -93,7 +103,9 @@ import {
   useArriveAtDestination,
   useArriveAtStop,
   useLocationPermission,
+  useCompleteTrip,
   useReportIncident,
+  useStartTrip,
 } from "@/features/trip-ops/use-trip-ops";
 import {
   TRACKING_ENABLED,
@@ -177,12 +189,17 @@ export function DriverOverviewScreen() {
           <SettingsButton />
         </>
       }
-      // Query lịch nằm trong WorkScheduleSection → refetch qua invalidate.
+      // Query lịch + danh sách shuttle nằm trong 2 section con → refetch qua
+      // invalidate cả hai.
       onRefresh={() =>
-        queryClient.invalidateQueries({ queryKey: ["schedule"] })
+        Promise.all([
+          queryClient.invalidateQueries({ queryKey: ["schedule"] }),
+          queryClient.invalidateQueries({ queryKey: ["shuttle-trips"] }),
+        ])
       }
     >
       <WorkScheduleSection onOpenActive={() => router.push("/driver/trip")} />
+      <ShuttleScheduleSection />
     </OperationsScreen>
   );
 }
@@ -239,13 +256,35 @@ export function DriverTripScreen() {
     const status = normalizeTripStatus(activeTrip.trip?.status);
     return status === "IN_PROGRESS" || status === "BOARDING";
   }, [activeTrip.trip?.status]);
+  // Chuyến đang mở soát vé (job backend tự chuyển SCHEDULED -> BOARDING
+  // ~30 phút trước giờ chạy) — điều kiện để driver bấm "Bắt đầu chuyến".
+  const tripBoarding =
+    normalizeTripStatus(activeTrip.trip?.status) === "BOARDING";
+  const startTripMutation = useStartTrip(tripId);
+  // TRIP_INVALID_TRANSITION dùng chung mã với complete nhưng ngữ cảnh khác
+  // (ở đây là "chưa BOARDING") → map riêng thay vì dùng message mặc định.
+  const startError =
+    startTripMutation.error instanceof ApiError &&
+    startTripMutation.error.code === "TRIP_INVALID_TRANSITION"
+      ? "Chuyến chưa mở soát vé nên chưa thể bắt đầu. Kéo xuống làm mới rồi thử lại."
+      : tripOpsErrorMessage(startTripMutation.error);
+  // Hoàn tất chuyến — chỉ khi đang IN_PROGRESS. TRIP_INVALID_TRANSITION của
+  // complete đã có message đúng ngữ cảnh trong trip-ops-errors.
+  const tripInProgress =
+    normalizeTripStatus(activeTrip.trip?.status) === "IN_PROGRESS";
+  const completeTripMutation = useCompleteTrip(tripId);
+  const completeError = tripOpsErrorMessage(completeTripMutation.error);
   const routeQuery = useTripRouteGeometry(tripId);
   // Chỉ dùng khi bật cờ demo EXPO_PUBLIC_FAKE_GPS; bình thường là mảng rỗng.
   const simulationPath = useMemo(
     () => buildSimulationPath(routeQuery.data),
     [routeQuery.data],
   );
-  const gps = useGpsBroadcast(tripId, tripRunning, simulationPath);
+  const gps = useGpsBroadcast(
+    tripId ? { kind: "trip", id: tripId } : null,
+    tripRunning,
+    simulationPath,
+  );
   // ETA chỉ query khi tính năng tracking đã bật (production socket/REST sẵn sàng).
   const etaQuery = useTripEta(
     TRACKING_ENABLED ? tripId : null,
@@ -255,6 +294,32 @@ export function DriverTripScreen() {
   // nó); REST theo stop app đoán chỉ là dự phòng khi socket chưa có sự kiện.
   const eta = gps.eta ?? etaQuery.data?.eta ?? null;
   const gpsMeta = gpsStatusMeta(gps.status);
+
+  // Banner booking mới chỉ hiện ~10s như toast rồi tự ẩn (dữ liệu ghế đã được
+  // hook invalidate rồi, banner chỉ để báo). Đánh dấu eventId đã ẩn trong
+  // callback setTimeout — không setState đồng bộ trong thân effect (rule
+  // react-hooks/set-state-in-effect).
+  const [hiddenBookingEventId, setHiddenBookingEventId] = useState<
+    string | null
+  >(null);
+  useEffect(() => {
+    const event = gps.bookingEvent;
+    if (!event) {
+      return;
+    }
+    const timer = setTimeout(() => setHiddenBookingEventId(event.eventId), 10_000);
+    return () => clearTimeout(timer);
+  }, [gps.bookingEvent]);
+  const bookingBanner =
+    gps.bookingEvent && gps.bookingEvent.eventId !== hiddenBookingEventId
+      ? gps.bookingEvent
+      : null;
+  // Banner trễ: ưu tiên contract mới delayStatus/delayMinutes từ gps.eta,
+  // gps.delay (trip:statusChanged) là dự phòng. gps.delay=null (đã
+  // DELAY_CLEARED) mà delayStatus không phải DELAYED thì không hiện banner.
+  const delayStatus = gps.eta?.delayStatus;
+  const isDelayed = delayStatus === "DELAYED" || Boolean(gps.delay);
+  const delayMinutes = gps.eta?.delayMinutes ?? gps.delay?.delayMinutes ?? null;
 
   return (
     <OperationsScreen
@@ -341,6 +406,64 @@ export function DriverTripScreen() {
               />
             </View>
 
+            {tripBoarding ? (
+              <>
+                <ActionButton
+                  icon="play-arrow"
+                  label={
+                    startTripMutation.isPending
+                      ? "Đang bắt đầu chuyến…"
+                      : "Bắt đầu chuyến"
+                  }
+                  disabled={startTripMutation.isPending}
+                  onPress={() => startTripMutation.mutate()}
+                />
+                <Text style={styles.metaText}>
+                  Bấm khi xe rời bến — chuyến chuyển sang “Đang chạy”, mở khoá
+                  xác nhận điểm dừng và phát hành trình.
+                </Text>
+              </>
+            ) : null}
+            {startError ? (
+              <Text style={styles.delayText}>{startError}</Text>
+            ) : null}
+
+            {tripInProgress ? (
+              <ActionButton
+                icon="check-circle"
+                label={
+                  completeTripMutation.isPending
+                    ? "Đang hoàn tất chuyến…"
+                    : "Hoàn tất chuyến"
+                }
+                tone="secondary"
+                disabled={completeTripMutation.isPending}
+                onPress={() => {
+                  // Chưa ghi nhận tới bến cuối thì hỏi lại cho chắc — backend
+                  // không bắt buộc mốc này để complete, nhưng thường là bấm nhầm.
+                  if (details.destinationArrivedAt == null) {
+                    Alert.alert(
+                      "Hoàn tất chuyến?",
+                      "Chuyến chưa ghi nhận đã đến bến cuối. Vẫn hoàn tất?",
+                      [
+                        { text: "Chưa", style: "cancel" },
+                        {
+                          text: "Hoàn tất",
+                          style: "destructive",
+                          onPress: () => completeTripMutation.mutate(),
+                        },
+                      ],
+                    );
+                    return;
+                  }
+                  completeTripMutation.mutate();
+                }}
+              />
+            ) : null}
+            {completeError ? (
+              <Text style={styles.delayText}>{completeError}</Text>
+            ) : null}
+
             {details.destinationStation?.name ? (
               <ActionButton
                 icon="directions"
@@ -410,15 +533,24 @@ export function DriverTripScreen() {
                 compact
               />
             </View>
-            {gps.delay ? (
+            {isDelayed ? (
               <Text style={styles.delayText}>
-                Chuyến đang trễ khoảng {gps.delay.delayMinutes} phút so với lịch.
+                {delayMinutes != null
+                  ? `Chuyến đang trễ khoảng ${delayMinutes} phút so với lịch.`
+                  : "Chuyến đang chạy trễ so với lịch."}
               </Text>
             ) : null}
             {gps.status === "denied" ? (
               <Text style={styles.metaText}>
                 Chưa cấp quyền vị trí nên không thể phát hành trình. Vào Cài đặt để
                 cấp quyền vị trí cho VietRide Driver.
+              </Text>
+            ) : null}
+            {bookingBanner ? (
+              <Text style={styles.metaText}>
+                Có booking mới: {bookingBanner.bookingCode} ·{" "}
+                {bookingBanner.passengerCount} khách. Danh sách ghế đã được
+                làm mới.
               </Text>
             ) : null}
           </SurfaceCard>
@@ -1076,6 +1208,32 @@ export function AssistantCargoScreen() {
   const parcelsQuery = useAssistantTripParcels(tripId);
   const items = parcelsQuery.data?.items ?? [];
 
+  // Quét QR dán trên kiện → tra cứu nhanh kiện thuộc chuyến đang chọn.
+  const scanParcel = useScanParcelQr(tripId);
+  const [parcelScannerOpen, setParcelScannerOpen] = useState(false);
+  const handleParcelScanned = (code: string) => {
+    setParcelScannerOpen(false);
+    scanParcel.mutate(code, {
+      onSuccess: (data) => {
+        const meta = parcelStatusMeta(data.status);
+        Alert.alert(
+          `Kiện ${data.parcelCode ?? code}`,
+          [
+            `Trạng thái: ${meta.label}`,
+            `Người nhận: ${data.recipientName ?? "—"}`,
+            `Kích cỡ: ${sizeCategoryLabel(data.sizeCategory)}`,
+          ].join("\n"),
+        );
+      },
+      onError: (error) => {
+        Alert.alert(
+          "Không tra cứu được kiện",
+          tripOpsErrorMessage(error) ?? "Có lỗi xảy ra, thử lại sau.",
+        );
+      },
+    });
+  };
+
   // Đếm nhanh theo trạng thái cho phần tóm tắt.
   const loadedCount = items.filter((parcel) =>
     ["LOADED", "IN_TRANSIT"].includes(parcel.status),
@@ -1137,6 +1295,28 @@ export function AssistantCargoScreen() {
               </View>
             </SurfaceCard>
           ) : null}
+
+          <SurfaceCard delay={60}>
+            <SectionTitle
+              icon="qr-code-scanner"
+              title="Tra cứu kiện"
+              subtitle="Quét mã QR dán trên kiện để xem nhanh trạng thái."
+            />
+            <ActionButton
+              icon="qr-code-scanner"
+              label={scanParcel.isPending ? "Đang tra cứu…" : "Quét QR kiện hàng"}
+              tone="secondary"
+              disabled={scanParcel.isPending}
+              onPress={() => setParcelScannerOpen(true)}
+            />
+            <QrScannerModal
+              visible={parcelScannerOpen}
+              title="Quét QR kiện hàng"
+              hint="Đưa mã QR dán trên kiện vào giữa khung."
+              onScanned={handleParcelScanned}
+              onClose={() => setParcelScannerOpen(false)}
+            />
+          </SurfaceCard>
 
           {items.length === 0 ? (
             <EmptyCard
@@ -1209,6 +1389,8 @@ function ParcelCard({
   const unload = useUnloadParcel(tripId);
   const deliver = useDeliverParcel(tripId);
   const confirmDelivery = useConfirmParcelDelivery(tripId);
+  const confirmTransfer = useConfirmParcelTransfer(tripId);
+  const resendEmail = useResendDeliveryEmail(tripId);
 
   // Panel đang mở: cân lại / xác nhận giao / không.
   const [mode, setMode] = useState<"none" | "reweigh" | "confirm">("none");
@@ -1217,6 +1399,13 @@ function ParcelCard({
   const [hei, setHei] = useState("");
   const [wgt, setWgt] = useState("");
   const [note, setNote] = useState("");
+
+  // Ảnh bằng chứng (uri cục bộ, tối đa 3) đính kèm bước check-in/deliver.
+  // Optional — không ảnh vẫn thao tác được. Chỉ ASSISTANT upload được
+  // (Storage Rules), màn này vốn là màn assistant.
+  const [evidenceUris, setEvidenceUris] = useState<string[]>([]);
+  const [evidenceCameraOpen, setEvidenceCameraOpen] = useState(false);
+  const [uploadingEvidence, setUploadingEvidence] = useState(false);
 
   const dims = [len, wid, hei, wgt].map((value) =>
     Number(value.replace(",", ".")),
@@ -1229,7 +1418,9 @@ function ParcelCard({
     load.isPending ||
     unload.isPending ||
     deliver.isPending ||
-    confirmDelivery.isPending;
+    confirmDelivery.isPending ||
+    confirmTransfer.isPending ||
+    resendEmail.isPending;
 
   const errorMessage = firstErrorMessage(
     checkIn.error,
@@ -1238,6 +1429,8 @@ function ParcelCard({
     unload.error,
     deliver.error,
     confirmDelivery.error,
+    confirmTransfer.error,
+    resendEmail.error,
   );
 
   const submitReweigh = () => {
@@ -1258,6 +1451,54 @@ function ParcelCard({
       { parcelId: parcel.parcelId, note: note.trim() },
       { onSuccess: () => setMode("none") },
     );
+  };
+
+  // Check-in/deliver kèm ảnh: upload trước (nếu có), lỗi upload thì dừng —
+  // không gửi thao tác thiếu ảnh mà phụ xe tưởng đã đính kèm.
+  const submitWithEvidence = (kind: "check-in" | "delivery") => {
+    const run = async () => {
+      let photoUrls: string[] | undefined;
+
+      if (evidenceUris.length > 0) {
+        setUploadingEvidence(true);
+        try {
+          photoUrls = await uploadEvidencePhotos(
+            parcel.parcelId,
+            kind,
+            evidenceUris,
+          );
+        } catch (error) {
+          Alert.alert(
+            "Không upload được ảnh",
+            error instanceof Error
+              ? error.message
+              : "Có lỗi xảy ra, thử lại sau.",
+          );
+          return;
+        } finally {
+          setUploadingEvidence(false);
+        }
+      }
+
+      const clearPhotos = () => setEvidenceUris([]);
+      if (kind === "check-in") {
+        checkIn.mutate(
+          {
+            parcelId: parcel.parcelId,
+            parcelCode: parcel.parcelCode,
+            photoUrls,
+          },
+          { onSuccess: clearPhotos },
+        );
+      } else {
+        deliver.mutate(
+          { parcelId: parcel.parcelId, photoUrls },
+          { onSuccess: clearPhotos },
+        );
+      }
+    };
+
+    void run();
   };
 
   return (
@@ -1405,19 +1646,71 @@ function ParcelCard({
         </View>
       ) : (
         <View style={styles.parcelActionStack}>
+          {actions.includes("check-in") || actions.includes("deliver") ? (
+            <>
+              <View style={styles.evidenceRow}>
+                {evidenceUris.map((uri) => (
+                  <Pressable
+                    key={uri}
+                    accessibilityRole="button"
+                    onPress={() =>
+                      setEvidenceUris((current) =>
+                        current.filter((item) => item !== uri),
+                      )
+                    }
+                  >
+                    <Image source={{ uri }} style={styles.evidenceThumb} />
+                  </Pressable>
+                ))}
+                <ActionButton
+                  icon="photo-camera"
+                  label={`Ảnh bằng chứng (${evidenceUris.length}/${MAX_EVIDENCE_PHOTOS})`}
+                  tone="ghost"
+                  small
+                  disabled={
+                    busy ||
+                    uploadingEvidence ||
+                    evidenceUris.length >= MAX_EVIDENCE_PHOTOS
+                  }
+                  onPress={() => setEvidenceCameraOpen(true)}
+                />
+              </View>
+              {evidenceUris.length > 0 ? (
+                <Text style={styles.parcelHint}>Chạm vào ảnh để xoá.</Text>
+              ) : null}
+              <EvidenceCameraModal
+                visible={evidenceCameraOpen}
+                title={`Chụp ảnh bằng chứng • ${parcel.parcelCode}`}
+                onCaptured={(uri) => {
+                  setEvidenceUris((current) => {
+                    if (current.length >= MAX_EVIDENCE_PHOTOS) {
+                      return current;
+                    }
+                    const next = [...current, uri];
+                    if (next.length >= MAX_EVIDENCE_PHOTOS) {
+                      setEvidenceCameraOpen(false);
+                    }
+                    return next;
+                  });
+                }}
+                onClose={() => setEvidenceCameraOpen(false)}
+              />
+            </>
+          ) : null}
           {actions.includes("check-in") ? (
             <ActionButton
               icon="how-to-reg"
-              label={checkIn.isPending ? "Đang nhận…" : "Nhận kiện tại bến"}
+              label={
+                uploadingEvidence
+                  ? "Đang tải ảnh…"
+                  : checkIn.isPending
+                    ? "Đang nhận…"
+                    : "Nhận kiện tại bến"
+              }
               tone="primary"
               small
-              disabled={busy}
-              onPress={() =>
-                checkIn.mutate({
-                  parcelId: parcel.parcelId,
-                  parcelCode: parcel.parcelCode,
-                })
-              }
+              disabled={busy || uploadingEvidence}
+              onPress={() => submitWithEvidence("check-in")}
             />
           ) : null}
           {actions.includes("load") ? (
@@ -1458,11 +1751,17 @@ function ParcelCard({
           {actions.includes("deliver") ? (
             <ActionButton
               icon="local-shipping"
-              label={deliver.isPending ? "Đang giao…" : "Giao cho người nhận"}
+              label={
+                uploadingEvidence
+                  ? "Đang tải ảnh…"
+                  : deliver.isPending
+                    ? "Đang giao…"
+                    : "Giao cho người nhận"
+              }
               tone="primary"
               small
-              disabled={busy}
-              onPress={() => deliver.mutate(parcel.parcelId)}
+              disabled={busy || uploadingEvidence}
+              onPress={() => submitWithEvidence("delivery")}
             />
           ) : null}
           {actions.includes("confirm-delivery") ? (
@@ -1473,6 +1772,44 @@ function ParcelCard({
               small
               disabled={busy}
               onPress={() => setMode("confirm")}
+            />
+          ) : null}
+          {actions.includes("confirm-transfer") ? (
+            <ActionButton
+              icon="swap-horiz"
+              label={
+                confirmTransfer.isPending
+                  ? "Đang xác nhận…"
+                  : "Nhận kiện chuyển đến"
+              }
+              tone="primary"
+              small
+              disabled={busy}
+              onPress={() =>
+                confirmTransfer.mutate({
+                  parcelId: parcel.parcelId,
+                  parcelCode: parcel.parcelCode,
+                })
+              }
+            />
+          ) : null}
+          {actions.includes("resend-email") ? (
+            <ActionButton
+              icon="mail"
+              label={resendEmail.isPending ? "Đang gửi…" : "Gửi lại email"}
+              tone="secondary"
+              small
+              disabled={busy}
+              onPress={() =>
+                resendEmail.mutate(parcel.parcelId, {
+                  onSuccess: (data) => {
+                    Alert.alert(
+                      "Đã gửi lại email",
+                      `Người nhận có thể xác nhận tới ${formatTimeHM(data.expiresAt)}.`,
+                    );
+                  },
+                })
+              }
             />
           ) : null}
           {actions.length === 0 ? (
@@ -3057,6 +3394,19 @@ const makeStyles = (c: Palette) =>
   },
   parcelActionStack: {
     gap: Spacing.one,
+  },
+  evidenceRow: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    alignItems: "center",
+    gap: Spacing.one,
+  },
+  evidenceThumb: {
+    width: 52,
+    height: 52,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: c.border,
   },
   dimRow: {
     flexDirection: "row",

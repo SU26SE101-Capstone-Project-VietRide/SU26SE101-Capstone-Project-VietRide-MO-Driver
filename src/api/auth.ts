@@ -4,6 +4,7 @@ import type {
   AuthUser,
   DevicePlatform,
   DeviceTokenData,
+  FirebaseCustomTokenData,
   ForgotPasswordData,
   LoginData,
   ResetPasswordData,
@@ -99,6 +100,17 @@ export async function logout(): Promise<void> {
 
 export function getMe(): Promise<AuthUser> {
   return apiRequest<AuthUser>("/v1/users/me");
+}
+
+// Đổi JWT app lấy Firebase custom token theo purpose (miễn Idempotency-Key).
+// Hiện dùng cho PARCEL_EVIDENCE_PHOTO — Storage Rules chỉ cho ASSISTANT ghi.
+export function getFirebaseCustomToken(
+  purpose: string,
+): Promise<FirebaseCustomTokenData> {
+  return apiRequest<FirebaseCustomTokenData>("/v1/firebase/custom-token", {
+    method: "POST",
+    body: { purpose },
+  });
 }
 
 // Đăng ký/refresh FCM device token để nhận push. Không cần Idempotency-Key.

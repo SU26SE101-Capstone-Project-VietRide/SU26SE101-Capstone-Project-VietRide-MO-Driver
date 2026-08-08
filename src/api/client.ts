@@ -111,8 +111,21 @@ async function doRefresh(): Promise<LoginData | null> {
     const envelope = await parseEnvelope<LoginData>(response);
     data = unwrap(envelope, response.status);
   } catch {
-    // Refresh token hết hạn/không hợp lệ → xóa phiên.
-    await clearTokens();
+    // Refresh token hết hạn/không hợp lệ → xóa phiên. NHƯNG phiên có thể đã
+    // đổi trong lúc chờ mạng (logout rồi đăng nhập tài khoản khác): logout
+    // revoke refresh token cũ nên nhánh này chắc chắn chạy — không được xoá
+    // nhầm token của phiên mới.
+    const current = await getTokens();
+    if (current?.refreshToken === tokens.refreshToken) {
+      await clearTokens();
+    }
+    return null;
+  }
+
+  // Cùng lý do: chỉ ghi kết quả nếu storage vẫn giữ đúng refresh token đã
+  // dùng — không thì bỏ, tránh "hồi sinh" token tài khoản cũ đè phiên mới.
+  const current = await getTokens();
+  if (current?.refreshToken !== tokens.refreshToken) {
     return null;
   }
 

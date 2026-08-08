@@ -5,6 +5,7 @@ import type {
   DestinationArrivalData,
   ReportIncidentData,
   ReportIncidentInput,
+  StartTripData,
   StopArrivalData,
 } from "./types";
 
@@ -22,6 +23,15 @@ export function reportIncident(
   return apiRequest<ReportIncidentData>(`/v1/driver/trips/${tripId}/incident`, {
     method: "POST",
     body: input,
+    headers: { "Idempotency-Key": newIdempotencyKey() },
+  });
+}
+
+// Bắt đầu chuyến (BOARDING -> IN_PROGRESS). Không body.
+// Chuyến phải đang BOARDING; chưa/quá trạng thái trả 409 TRIP_INVALID_TRANSITION.
+export function startTrip(tripId: string): Promise<StartTripData> {
+  return apiRequest<StartTripData>(`/v1/driver/trips/${tripId}/start`, {
+    method: "POST",
     headers: { "Idempotency-Key": newIdempotencyKey() },
   });
 }

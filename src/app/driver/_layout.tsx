@@ -22,6 +22,9 @@ export default function DriverLayout() {
       {/* Cài đặt nằm ngoài tab bar (mở từ nút bánh răng góc phải header) và tự
           dựng nút back trong OperationsScreen → tắt native header. */}
       <Stack.Screen name="settings" />
+      {/* Manifest chuyến trung chuyển — mở từ section Xe trung chuyển hoặc
+          push notification SHUTTLE_ASSIGNED. */}
+      <Stack.Screen name="shuttle/[shuttleTripId]" />
     </Stack>
   );
 }

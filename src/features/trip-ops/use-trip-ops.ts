@@ -8,6 +8,7 @@ import {
   arriveAtStop,
   completeTrip,
   reportIncident,
+  startTrip,
 } from "@/api/driver-ops";
 import type { ReportIncidentInput } from "@/api/types";
 
@@ -24,6 +25,22 @@ function useAfterArrival(tripId: string | null) {
       queryClient.invalidateQueries({ queryKey: ["assistant-parcels", tripId] }),
     ]);
   };
+}
+
+// Bắt đầu chuyến (BOARDING -> IN_PROGRESS). Làm mới lịch + chi tiết chuyến
+// để status mới lan tới màn Chuyến (mở khoá "Đã đến"/GPS theo IN_PROGRESS).
+export function useStartTrip(tripId: string | null) {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: () => startTrip(tripId as string),
+    onSuccess: async () => {
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["schedule"] }),
+        queryClient.invalidateQueries({ queryKey: ["trip", tripId] }),
+      ]);
+    },
+  });
 }
 
 // Xác nhận xe đã đến một điểm dừng.

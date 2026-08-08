@@ -355,13 +355,58 @@ export type DeliverParcelData = {
   deliveryTokenExpiresAt: string;
 };
 
-// POST /v1/assistant/parcels/{id}/confirm-delivery — doc không nêu rõ shape data;
-// giữ tối thiểu (parcelId + status), phần còn lại optional để không hứa sai field.
-export type ConfirmParcelDeliveryData = {
+// ===== Parcel QR + crew (docs/Implements/API-Parcel-QR-Crew.md) =====
+
+// POST /v1/assistant/trips/{tripId}/parcels/qr-scan — tra cứu kiện theo mã QR,
+// KHÔNG đổi trạng thái.
+export type ScanParcelQrData = {
   parcelId: string;
-  status: string;
-  parcelCode?: string;
-  confirmedAt?: string | null;
+  parcelCode: string | null;
+  status: string | null;
+  tripId: string;
+  recipientName: string | null;
+  sizeCategory: string | null;
+  photoUrl: string | null;
+};
+
+// POST /v1/crew/parcels/{parcelId}/confirm-transfer — crew chuyến đích xác nhận
+// đã nhận kiện được operator chuyển sang (PENDING_TRANSFER_CONFIRM).
+export type ConfirmParcelTransferData = {
+  parcelId: string;
+  parcelCode: string | null;
+  status: string | null;
+  tripId: string | null;
+  transferTargetTripId: string | null;
+  transferConfirmedAt: string | null;
+  returnReason: string | null;
+  returnedAt: string | null;
+  refundChoice: string | null;
+  refundAmount: number | null;
+};
+
+// POST /v1/crew/parcels/{parcelId}/manual-confirm — crew xác nhận giao thay
+// người nhận (khi khách không bấm link email).
+export type ManualConfirmParcelData = {
+  parcelId: string;
+  status: string | null;
+  confirmedAt: string;
+};
+
+// POST /v1/crew/parcels/{parcelId}/resend-delivery-email — expiresAt là hạn mới
+// của delivery token sau khi gửi lại email.
+export type ResendDeliveryEmailData = {
+  parcelId: string;
+  status: string | null;
+  expiresAt: string;
+};
+
+// POST /v1/firebase/custom-token — đổi JWT app lấy Firebase custom token để
+// đăng nhập Firebase Auth (upload ảnh bằng chứng). uploadPath là prefix
+// parcel-ops/{operatorId}/{userId}/ do Identity trả, FE nối {parcelId}/{file}.
+export type FirebaseCustomTokenData = {
+  token: string | null;
+  purpose: string | null;
+  uploadPath: string | null;
 };
 
 // ===== Device token (push) =====
@@ -463,7 +508,13 @@ export type GpsTrailData = {
   hasPreviousPage: boolean;
 };
 
+// Trạng thái trễ theo contract mới (API-Driver-Assistant.md). Client cũ chỉ có
+// cờ boolean `delayed`; client mới ưu tiên delayStatus khi có.
+export type DelayStatus = "DELAYED" | "ON_TIME" | "UNKNOWN";
+
 // ETA của trip tới 1 stop (Redis). null nếu chưa có cache hợp lệ.
+// 3 field delay* là additive — REST có thể trả delayed=null khi không chứng
+// minh được trạng thái.
 export type TripEta = {
   tripId: string;
   stopId: string;
@@ -471,6 +522,9 @@ export type TripEta = {
   estimatedArrivalTime: string;
   distanceMeters: number;
   updatedAt: string;
+  delayed?: boolean | null;
+  delayStatus?: DelayStatus | string;
+  delayMinutes?: number | null;
 };
 
 export type TripEtaData = {
@@ -487,18 +541,140 @@ export type GpsUpdatePayload = {
   recordedAt: string;
 };
 
-// Broadcast eta:update — server đẩy sau mỗi lần tính lại ETA. Giống TripEta của
-// REST nhưng có thêm cờ `delayed`; stopId do server chọn, KHÔNG chắc trùng stop
-// mà app đang hiển thị.
-export type EtaUpdateEvent = TripEta & { delayed?: boolean };
+// Socket giữ delayed là boolean để client cũ không vỡ; delayStatus/delayMinutes
+// đã nằm sẵn trong TripEta (optional).
+export type EtaUpdateEvent = TripEta;
 
-// Broadcast trip:statusChanged — hiện chỉ phát khi delay detection đánh dấu trễ.
+// Broadcast trip:statusChanged — status là "DELAYED" khi bị đánh dấu trễ và
+// "DELAY_CLEARED" khi hết trễ (contract mới). Client phải xử lý cả hai.
 export type TripStatusChangedEvent = {
   tripId: string;
   stopId: string;
   status: string;
   delayMinutes: number;
   updatedAt: string;
+};
+
+// ===== Shuttle (driver) — API-Driver-Assistant.md + API-Shuttle.md =====
+
+// Khai kèm | string ở nơi dùng để không vỡ khi backend thêm giá trị mới
+// (giống convention TripStopStatus).
+export type ShuttleTripStatus =
+  | "SCHEDULED"
+  | "IN_PROGRESS"
+  | "COMPLETED"
+  | "CANCELLED";
+
+export type ShuttleStopStatus =
+  | "PENDING"
+  | "PICKED_UP"
+  | "DELIVERED"
+  | "NO_SHOW"
+  | "CANCELLED";
+
+export type ShuttleDirection = "INBOUND_TO_STATION" | "OUTBOUND_FROM_STATION";
+
+// Item của GET /v1/driver/shuttle-trips.
+export type DriverShuttleTrip = {
+  shuttleTripId: string;
+  mainTripId: string;
+  direction: ShuttleDirection | string;
+  status: ShuttleTripStatus | string;
+  vehicleId: string;
+  licensePlate: string;
+  scheduledDepartureTime: string;
+  scheduledEndTime: string;
+  passengerCount: number;
+  stopCount: number;
+};
+
+export type DriverShuttleTripsData = {
+  from: string; // YYYY-MM-DD (window ICT do backend chốt)
+  to: string;
+  items: DriverShuttleTrip[];
+};
+
+// 1 pickup group trong manifest (backend gom theo bookingId + pickupOrder,
+// status cả group luôn đồng nhất — lệch nhau BE trả 409 chứ không trả data).
+export type ShuttleManifestStop = {
+  pickupOrder: number;
+  bookingId: string;
+  ticketIds: string[];
+  passengerCount: number;
+  pickupAddress: string;
+  pickupLatitude: number;
+  pickupLongitude: number;
+  status: ShuttleStopStatus | string;
+  pickedUpAt: string | null;
+  deliveredAt: string | null;
+  passengerDisplayName: string;
+  passengerPhone: string;
+};
+
+export type ShuttleManifestData = {
+  shuttleTripId: string;
+  mainTripId: string;
+  direction: ShuttleDirection | string;
+  status: ShuttleTripStatus | string;
+  stationId: string;
+  stationName: string;
+  stationLatitude: number;
+  stationLongitude: number;
+  scheduledDepartureTime: string;
+  scheduledEndTime: string;
+  stops: ShuttleManifestStop[];
+};
+
+// Doc không mô tả body response của các mutation lifecycle → không đọc field
+// nào từ đây; nguồn dữ liệu sau mutation là refetch manifest.
+export type ShuttleLifecycleData = {
+  shuttleTripId?: string;
+  status?: string;
+} | null;
+
+// Payload emit shuttle:gps:update. LƯU Ý: field là `heading`, KHÁC `headingDeg`
+// của gps:update chuyến chính (contract Day 36).
+export type ShuttleGpsUpdatePayload = {
+  shuttleTripId: string;
+  latitude: number;
+  longitude: number;
+  speedKmh?: number;
+  heading?: number;
+  recordedAt: string;
+};
+
+// Broadcast shuttle:eta:update — ETA tới điểm đón kế tiếp do backend tính.
+export type ShuttleEtaUpdateEvent = {
+  shuttleTripId: string;
+  nextPickupOrder: number;
+  etaMinutes: number;
+  estimatedArrivalTime: string;
+  distanceMeters: number;
+  updatedAt: string;
+};
+
+// Broadcast booking:created — chỉ crew room nhận (Driver/Assistant của Trip).
+export type BookingCreatedEvent = {
+  eventId: string;
+  occurredAt: string;
+  bookingId: string;
+  bookingCode: string;
+  tripId: string;
+  status: string; // contract: luôn CONFIRMED
+  ticketCodes: string[];
+  passengerCount: number;
+  pickup: {
+    stationId: string | null;
+    stopId: string | null;
+    address: string | null;
+  };
+  dropoff: {
+    stationId: string | null;
+    stopId: string | null;
+    address: string | null;
+  };
+  driverUserId: string;
+  assistantUserId: string | null;
 };
 
 // ===== Notification (prefix /v1) =====
@@ -560,6 +736,15 @@ export type ReportIncidentData = {
   reportedAt: string;
 };
 
+// POST /v1/driver/trips/{tripId}/start — BOARDING -> IN_PROGRESS.
+// Backend yêu cầu chuyến phải đang BOARDING (job tự chuyển từ SCHEDULED
+// ~30 phút trước giờ chạy); chưa BOARDING trả 409 TRIP_INVALID_TRANSITION.
+export type StartTripData = {
+  tripId: string;
+  status: string;
+  actualDepartureTime: string;
+};
+
 // POST /v1/driver/trips/{tripId}/stops/{stopId}/arrive
 export type StopArrivalData = {
   tripId: string;
@@ -582,6 +767,7 @@ export type CompleteTripData = {
   tripId: string;
   status: string;
   completedAt: string;
+  completedByUserId: string;
 };
 
 // ===== Đề xuất đổi tuyến (API driver route change proposals) =====

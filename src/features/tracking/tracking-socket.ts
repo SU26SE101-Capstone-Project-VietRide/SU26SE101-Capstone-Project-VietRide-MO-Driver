@@ -2,8 +2,11 @@ import { io, type Socket } from "socket.io-client";
 
 import { API_BASE_URL } from "@/api/client";
 import type {
+  BookingCreatedEvent,
   EtaUpdateEvent,
   GpsUpdatePayload,
+  ShuttleEtaUpdateEvent,
+  ShuttleGpsUpdatePayload,
   TripStatusChangedEvent,
 } from "@/api/types";
 
@@ -75,5 +78,60 @@ export function onTripStatusChanged(
   socket.on("trip:statusChanged", handler);
   return () => {
     socket.off("trip:statusChanged", handler);
+  };
+}
+
+// ===== Shuttle (Day 36) + crew realtime (API-Driver-Assistant.md) =====
+
+// Join room tracking của ShuttleTrip. Ack của server đặt tên field là `tripId`
+// nhưng giá trị là shuttleTripId — chỉ đọc scope, không dùng field đó.
+export async function joinShuttleTracking(
+  socket: Socket,
+  shuttleTripId: string,
+): Promise<string> {
+  const ack = (await socket
+    .timeout(5000)
+    .emitWithAck("joinShuttleTracking", { shuttleTripId })) as JoinAck;
+
+  if (!ack?.success) {
+    throw new Error(ack?.error ?? "JOIN_FAILED");
+  }
+
+  return ack.scope;
+}
+
+// Gửi 1 điểm GPS shuttle. Payload dùng `heading` (KHÔNG phải headingDeg).
+export async function sendShuttleGpsUpdate(
+  socket: Socket,
+  payload: ShuttleGpsUpdatePayload,
+): Promise<boolean> {
+  const ack = (await socket
+    .timeout(5000)
+    .emitWithAck("shuttle:gps:update", payload)) as GpsAck;
+
+  return ack?.success === true;
+}
+
+// Server broadcast ETA tới điểm đón kế tiếp (backend chỉ tính lại khi xe đi
+// đủ 500m hoặc ETA trước < 15 phút — không phải mỗi điểm GPS đều có).
+export function onShuttleEtaUpdate(
+  socket: Socket,
+  handler: (event: ShuttleEtaUpdateEvent) => void,
+): () => void {
+  socket.on("shuttle:eta:update", handler);
+  return () => {
+    socket.off("shuttle:eta:update", handler);
+  };
+}
+
+// Server broadcast booking mới CONFIRMED vào crew room (chỉ Driver/Assistant
+// của Trip nhận — Tracking tự thêm vào room sau joinTripTracking).
+export function onBookingCreated(
+  socket: Socket,
+  handler: (event: BookingCreatedEvent) => void,
+): () => void {
+  socket.on("booking:created", handler);
+  return () => {
+    socket.off("booking:created", handler);
   };
 }

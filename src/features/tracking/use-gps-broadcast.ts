@@ -5,9 +5,12 @@ import type { Socket } from "socket.io-client";
 
 import { getTokens } from "@/api/token-storage";
 import type {
+  BookingCreatedEvent,
   EtaUpdateEvent,
   GeoPoint,
   GpsUpdatePayload,
+  ShuttleEtaUpdateEvent,
+  ShuttleGpsUpdatePayload,
   TripEtaData,
   TripStatusChangedEvent,
 } from "@/api/types";
@@ -19,10 +22,14 @@ import {
 } from "./fake-gps-route";
 import {
   createTrackingSocket,
+  joinShuttleTracking,
   joinTripTracking,
+  onBookingCreated,
   onEtaUpdate,
+  onShuttleEtaUpdate,
   onTripStatusChanged,
   sendGpsUpdate,
+  sendShuttleGpsUpdate,
 } from "./tracking-socket";
 
 // Trạng thái luồng phát GPS foreground cho màn chuyến đang chạy.
@@ -44,9 +51,13 @@ const GPS_DISTANCE_INTERVAL_M = 15;
 export const TRACKING_ENABLED =
   process.env.EXPO_PUBLIC_TRACKING_ENABLED === "true";
 
+// Đích phát GPS: chuyến chính hoặc shuttle. Hai contract khác event + tên field
+// (tripId/headingDeg vs shuttleTripId/heading) nên phân nhánh theo kind.
+export type GpsTarget = { kind: "trip" | "shuttle"; id: string };
+
 // Chuyển LocationObject của expo-location sang payload gps:update.
 // speed của expo-location là m/s → đổi ra km/h; heading = -1 nghĩa là không có.
-function toGpsPayload(
+function toTripGpsPayload(
   tripId: string,
   location: Location.LocationObject,
 ): GpsUpdatePayload {
@@ -69,12 +80,36 @@ function toGpsPayload(
   return payload;
 }
 
+// Shuttle dùng field `heading` (contract Day 36), còn lại giống chuyến chính.
+function toShuttleGpsPayload(
+  shuttleTripId: string,
+  location: Location.LocationObject,
+): ShuttleGpsUpdatePayload {
+  const { coords, timestamp } = location;
+  const payload: ShuttleGpsUpdatePayload = {
+    shuttleTripId,
+    latitude: coords.latitude,
+    longitude: coords.longitude,
+    recordedAt: new Date(timestamp).toISOString(),
+  };
+
+  if (coords.speed != null && coords.speed >= 0) {
+    payload.speedKmh = coords.speed * 3.6;
+  }
+
+  if (coords.heading != null && coords.heading >= 0) {
+    payload.heading = coords.heading;
+  }
+
+  return payload;
+}
+
 // Phát GPS realtime khi tài xế/phụ xe đang mở màn chuyến (foreground), đồng
 // thời nghe ETA và cảnh báo trễ mà server broadcast vào cùng room.
-// enabled=false hoặc tripId=null thì dừng và dọn dẹp.
+// enabled=false hoặc target=null thì dừng và dọn dẹp.
 // `simulationPath` chỉ dùng khi bật cờ demo EXPO_PUBLIC_FAKE_GPS.
 export function useGpsBroadcast(
-  tripId: string | null,
+  target: GpsTarget | null,
   enabled: boolean,
   simulationPath: GeoPoint[] = [],
 ) {
@@ -85,6 +120,16 @@ export function useGpsBroadcast(
   // guard của nó (bỏ stop ARRIVED/SKIPPED, không lùi sequence, bỏ stop cách
   // dưới 50 m) — không chắc trùng stop mà app đoán từ danh sách điểm dừng.
   const [lastEta, setLastEta] = useState<EtaUpdateEvent | null>(null);
+  // ETA shuttle tới điểm đón kế tiếp (chỉ nhánh shuttle).
+  const [shuttleEta, setShuttleEta] = useState<ShuttleEtaUpdateEvent | null>(
+    null,
+  );
+  // Booking mới nhất trên chuyến (chỉ nhánh trip, crew room).
+  const [bookingEvent, setBookingEvent] = useState<BookingCreatedEvent | null>(
+    null,
+  );
+  // Dedupe booking:created theo eventId (RabbitMQ at-least-once).
+  const seenBookingIdsRef = useRef<Set<string>>(new Set());
   const socketRef = useRef<Socket | null>(null);
   const watchRef = useRef<Location.LocationSubscription | null>(null);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -113,10 +158,13 @@ export function useGpsBroadcast(
 
   useEffect(() => {
     let cancelled = false;
+    // Destructure trước để deps của effect ổn định (object target đổi ref mỗi render).
+    const kind = target?.kind ?? null;
+    const id = target?.id ?? null;
 
     const start = async () => {
       // Chưa bật tính năng (production socket chưa sẵn sàng) hoặc không đủ điều kiện.
-      if (!TRACKING_ENABLED || !enabled || !tripId) {
+      if (!TRACKING_ENABLED || !enabled || !id || !kind) {
         cleanup();
         if (!cancelled) {
           setStatus("idle");
@@ -153,42 +201,92 @@ export function useGpsBroadcast(
 
       // Nghe broadcast của room. Đăng ký ngay từ đầu để không lỡ sự kiện bắn
       // ra sát lúc join xong.
-      const offEta = onEtaUpdate(socket, (event) => {
-        // Server tự chọn stop kế tiếp nên stopId có thể khác stop app đang xem;
-        // ghi đúng theo stopId trong payload, để React Query tự khớp màn hình.
-        if (event?.tripId !== tripId || !event.stopId) {
-          return;
-        }
+      const unsubscribers: (() => void)[] = [];
 
-        if (!cancelled) {
-          setLastEta(event);
-        }
+      if (kind === "trip") {
+        unsubscribers.push(
+          onEtaUpdate(socket, (event) => {
+            // Server tự chọn stop kế tiếp nên stopId có thể khác stop app đang
+            // xem; ghi đúng theo stopId trong payload, để React Query tự khớp
+            // màn hình.
+            if (event?.tripId !== id || !event.stopId) {
+              return;
+            }
 
-        queryClient.setQueryData<TripEtaData>(
-          ["tracking-eta", tripId, event.stopId],
-          {
-            eta: {
-              tripId: event.tripId,
-              stopId: event.stopId,
-              etaMinutes: event.etaMinutes,
-              estimatedArrivalTime: event.estimatedArrivalTime,
-              distanceMeters: event.distanceMeters,
-              updatedAt: event.updatedAt,
-            },
-          },
+            if (!cancelled) {
+              setLastEta(event);
+            }
+
+            queryClient.setQueryData<TripEtaData>(
+              ["tracking-eta", id, event.stopId],
+              {
+                eta: {
+                  tripId: event.tripId,
+                  stopId: event.stopId,
+                  etaMinutes: event.etaMinutes,
+                  estimatedArrivalTime: event.estimatedArrivalTime,
+                  distanceMeters: event.distanceMeters,
+                  updatedAt: event.updatedAt,
+                  delayed: event.delayed,
+                  delayStatus: event.delayStatus,
+                  delayMinutes: event.delayMinutes,
+                },
+              },
+            );
+          }),
         );
-      });
 
-      const offStatus = onTripStatusChanged(socket, (event) => {
-        if (event?.tripId !== tripId || cancelled) {
-          return;
-        }
-        setDelay(event);
-      });
+        unsubscribers.push(
+          onTripStatusChanged(socket, (event) => {
+            if (event?.tripId !== id || cancelled) {
+              return;
+            }
+            // Contract mới: DELAY_CLEARED nghĩa là hết trễ → tắt cảnh báo.
+            if (event.status === "DELAY_CLEARED") {
+              setDelay(null);
+              // DELAY_CLEARED tới mà không có eta:update mới → ETA cũ trong
+              // state vẫn còn delayStatus="DELAYED" stale, phải tự hạ cờ
+              // trễ trong đó, không thì banner UI dính mãi không tắt.
+              setLastEta((prev) =>
+                prev
+                  ? { ...prev, delayed: false, delayStatus: "ON_TIME", delayMinutes: 0 }
+                  : prev,
+              );
+            } else {
+              setDelay(event);
+            }
+          }),
+        );
+
+        unsubscribers.push(
+          onBookingCreated(socket, (event) => {
+            if (event?.tripId !== id || cancelled) {
+              return;
+            }
+            // At-least-once → bỏ qua event đã thấy.
+            if (seenBookingIdsRef.current.has(event.eventId)) {
+              return;
+            }
+            seenBookingIdsRef.current.add(event.eventId);
+            setBookingEvent(event);
+            // Ghế/khách của chuyến vừa đổi — làm mới từ backend.
+            void queryClient.invalidateQueries({ queryKey: ["seat-map", id] });
+            void queryClient.invalidateQueries({ queryKey: ["trip", id] });
+          }),
+        );
+      } else {
+        unsubscribers.push(
+          onShuttleEtaUpdate(socket, (event) => {
+            if (event?.shuttleTripId !== id || cancelled) {
+              return;
+            }
+            setShuttleEta(event);
+          }),
+        );
+      }
 
       unsubscribeRef.current = () => {
-        offEta();
-        offStatus();
+        unsubscribers.forEach((off) => off());
       };
 
       socket.on("connect_error", () => {
@@ -198,8 +296,22 @@ export function useGpsBroadcast(
       });
 
       socket.on("connect", () => {
+        // Reconnect chạy lại handler này — dọn watcher/interval cũ trước khi
+        // join lại, không thì mỗi lần reconnect sẽ chồng thêm nhịp phát GPS.
+        watchRef.current?.remove();
+        watchRef.current = null;
+        if (timerRef.current) {
+          clearInterval(timerRef.current);
+          timerRef.current = null;
+        }
+
         // Join room rồi mới bắt đầu watch vị trí.
-        joinTripTracking(socket, tripId)
+        const join =
+          kind === "trip"
+            ? joinTripTracking(socket, id)
+            : joinShuttleTracking(socket, id);
+
+        join
           .then(async () => {
             if (cancelled) {
               return;
@@ -222,14 +334,26 @@ export function useGpsBroadcast(
                   return;
                 }
 
-                void sendGpsUpdate(socket, {
-                  tripId,
+                const point = {
                   latitude: position.latitude,
                   longitude: position.longitude,
                   speedKmh: position.finished ? 0 : speedKmh,
-                  headingDeg: position.headingDeg,
                   recordedAt: new Date().toISOString(),
-                }).catch(() => {
+                };
+
+                void (
+                  kind === "trip"
+                    ? sendGpsUpdate(socket, {
+                        ...point,
+                        tripId: id,
+                        headingDeg: position.headingDeg,
+                      })
+                    : sendShuttleGpsUpdate(socket, {
+                        ...point,
+                        shuttleTripId: id,
+                        heading: position.headingDeg,
+                      })
+                ).catch(() => {
                   /* bỏ qua lỗi 1 điểm, tiếp tục phát điểm sau */
                 });
 
@@ -246,9 +370,13 @@ export function useGpsBroadcast(
                 },
                 (location) => {
                   // Fire-and-forget từng điểm; lỗi ack chỉ chuyển trạng thái, không throw.
-                  void sendGpsUpdate(
-                    socket,
-                    toGpsPayload(tripId, location),
+                  void (
+                    kind === "trip"
+                      ? sendGpsUpdate(socket, toTripGpsPayload(id, location))
+                      : sendShuttleGpsUpdate(
+                          socket,
+                          toShuttleGpsPayload(id, location),
+                        )
                   ).catch(() => {
                     /* bỏ qua lỗi 1 điểm, tiếp tục phát điểm sau */
                   });
@@ -284,12 +412,28 @@ export function useGpsBroadcast(
       cancelled = true;
       cleanup();
     };
-  }, [tripId, enabled, cleanup, queryClient]);
+  }, [target?.kind, target?.id, enabled, cleanup, queryClient]);
 
-  // Lọc theo tripId hiện tại thay vì reset state khi đổi chuyến — tránh
-  // setState trong thân effect, và cảnh báo của chuyến cũ tự hết hiệu lực.
-  const currentDelay = delay?.tripId === tripId ? delay : null;
-  const currentEta = lastEta?.tripId === tripId ? lastEta : null;
+  // Lọc theo id hiện tại thay vì reset state khi đổi chuyến — tránh setState
+  // trong thân effect, và cảnh báo của chuyến cũ tự hết hiệu lực.
+  const currentDelay =
+    target?.kind === "trip" && delay?.tripId === target.id ? delay : null;
+  const currentEta =
+    target?.kind === "trip" && lastEta?.tripId === target.id ? lastEta : null;
+  const currentShuttleEta =
+    target?.kind === "shuttle" && shuttleEta?.shuttleTripId === target.id
+      ? shuttleEta
+      : null;
+  const currentBooking =
+    target?.kind === "trip" && bookingEvent?.tripId === target.id
+      ? bookingEvent
+      : null;
 
-  return { status, delay: currentDelay, eta: currentEta };
+  return {
+    status,
+    delay: currentDelay,
+    eta: currentEta,
+    shuttleEta: currentShuttleEta,
+    bookingEvent: currentBooking,
+  };
 }

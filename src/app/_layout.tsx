@@ -9,7 +9,6 @@ import {
 
 import { Colors } from "@/constants/theme";
 import { usePushNavigation } from "@/features/notifications/use-push-navigation";
-import { OperationsProvider } from "@/features/operations/operations-context";
 import {
     SessionProvider,
     useSession,
@@ -97,11 +96,12 @@ function AppSessionGate() {
   }
 
   return (
-    <OperationsProvider key={session.crewId}>
-      <Stack screenOptions={{ headerShown: false }}>
-        {/* Màn Thông báo dùng chung cho cả Driver và Assistant, dựng header riêng. */}
-        <Stack.Screen name="notifications" />
-      </Stack>
-    </OperationsProvider>
+    // key theo crewId: đổi tài khoản là remount cả cây điều hướng, không sót
+    // state màn hình của phiên trước (trước đây key nằm ở OperationsProvider
+    // mock — provider đã xoá nhưng hành vi reset này phải giữ).
+    <Stack key={session.crewId} screenOptions={{ headerShown: false }}>
+      {/* Màn Thông báo dùng chung cho cả Driver và Assistant, dựng header riêng. */}
+      <Stack.Screen name="notifications" />
+    </Stack>
   );
 }

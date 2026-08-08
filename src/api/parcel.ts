@@ -3,11 +3,14 @@ import { newIdempotencyKey } from "./idempotency";
 import type {
   AssistantParcelListData,
   CheckInParcelData,
-  ConfirmParcelDeliveryData,
+  ConfirmParcelTransferData,
   DeliverParcelData,
   LoadParcelData,
+  ManualConfirmParcelData,
   ParcelDetail,
+  ResendDeliveryEmailData,
   ReweighParcelData,
+  ScanParcelQrData,
   UnloadParcelData,
 } from "./types";
 
@@ -37,6 +40,9 @@ export function getAssistantTripParcels(
 export type CheckInParcelInput = {
   tripId: string;
   parcelCode: string;
+  // Ảnh bằng chứng nhận kiện (URL đã upload). Optional — luồng upload cho crew
+  // chưa được BE chốt Storage Rules, xem docs/Implements/API-Parcel-QR-Crew.md.
+  photoUrls?: string[];
 };
 
 // Assistant xác nhận sender mang đúng kiện tới bến (Settlement v2).
@@ -101,13 +107,17 @@ export function loadParcel(
   });
 }
 
-// Assistant xác nhận giao hàng thủ công (note bắt buộc, max 500 ký tự theo doc).
+// Crew (driver + assistant) xác nhận giao thay người nhận khi khách không tự
+// confirm qua email. BE xác nhận 2026-08-08: đây là route chính cho app mobile;
+// /v1/assistant/.../confirm-delivery chỉ là alias cùng command. Kiện phải đang
+// DELIVERED_PENDING_CONFIRM (sai → 400 PARCEL_NOT_PENDING_CONFIRM); sau khi
+// confirm, token của khách bị revoke, status -> DELIVERY_CONFIRMED.
 export function confirmParcelDelivery(
   parcelId: string,
   note: string,
-): Promise<ConfirmParcelDeliveryData> {
-  return apiRequest<ConfirmParcelDeliveryData>(
-    `/v1/assistant/parcels/${parcelId}/confirm-delivery`,
+): Promise<ManualConfirmParcelData> {
+  return apiRequest<ManualConfirmParcelData>(
+    `/v1/crew/parcels/${parcelId}/manual-confirm`,
     {
       method: "POST",
       body: { note },
@@ -130,12 +140,64 @@ export function unloadParcel(parcelId: string): Promise<UnloadParcelData> {
   );
 }
 
-// Assistant giao kiện cho người nhận (không body).
+// Assistant giao kiện cho người nhận.
 // UNLOADED -> DELIVERED_PENDING_CONFIRM, sinh delivery token TTL 48 giờ.
-// Đây là bước bắt buộc giữa unload và confirm-delivery.
-export function deliverParcel(parcelId: string): Promise<DeliverParcelData> {
+// Đây là bước bắt buộc giữa unload và confirm-delivery. photoUrls là ảnh bằng
+// chứng giao (optional — luồng upload cho crew chưa chốt, xem API-Parcel-QR-Crew.md).
+export function deliverParcel(
+  parcelId: string,
+  photoUrls?: string[],
+): Promise<DeliverParcelData> {
   return apiRequest<DeliverParcelData>(
     `/v1/assistant/parcels/${parcelId}/deliver`,
+    {
+      method: "POST",
+      ...(photoUrls && photoUrls.length > 0 ? { body: { photoUrls } } : {}),
+      headers: { "Idempotency-Key": newIdempotencyKey() },
+    },
+  );
+}
+
+// ===== QR kiện + crew endpoints (docs/Implements/API-Parcel-QR-Crew.md) =====
+
+// Quét QR kiện: tra cứu kiện theo mã trong chuyến của assistant. Chỉ đọc,
+// không đổi trạng thái (dù là POST).
+export function scanParcelQr(
+  tripId: string,
+  parcelCode: string,
+): Promise<ScanParcelQrData> {
+  return apiRequest<ScanParcelQrData>(
+    `/v1/assistant/trips/${tripId}/parcels/qr-scan`,
+    {
+      method: "POST",
+      body: { parcelCode },
+    },
+  );
+}
+
+// Crew chuyến ĐÍCH xác nhận đã nhận kiện được operator chuyển sang
+// (PENDING_TRANSFER_CONFIRM). parcelCode để đối chiếu đúng kiện cầm trên tay.
+export function confirmParcelTransfer(
+  parcelId: string,
+  parcelCode: string,
+): Promise<ConfirmParcelTransferData> {
+  return apiRequest<ConfirmParcelTransferData>(
+    `/v1/crew/parcels/${parcelId}/confirm-transfer`,
+    {
+      method: "POST",
+      body: { parcelCode },
+      headers: { "Idempotency-Key": newIdempotencyKey() },
+    },
+  );
+}
+
+// Gửi lại email xác nhận giao cho người nhận (kiện DELIVERED_PENDING_CONFIRM).
+// expiresAt trong response là hạn mới của delivery token.
+export function resendDeliveryEmail(
+  parcelId: string,
+): Promise<ResendDeliveryEmailData> {
+  return apiRequest<ResendDeliveryEmailData>(
+    `/v1/crew/parcels/${parcelId}/resend-delivery-email`,
     {
       method: "POST",
       headers: { "Idempotency-Key": newIdempotencyKey() },
