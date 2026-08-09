@@ -40,8 +40,67 @@ export function notificationToneOf(type: string): Tone {
   return "neutral";
 }
 
-// Nhãn hiển thị + tiêu chí lọc: dùng luôn type gốc, thay _ bằng khoảng trắng.
+// Nhãn tiếng Việt cho các NotificationType crew hay gặp (API-Notification.md).
+// Nhãn ngắn vì dùng làm badge trên card VÀ chip lọc đầu trang.
+const NOTIFICATION_TYPE_LABELS: Record<string, string> = {
+  TRIP_ASSIGNED: "Phân công chuyến",
+  TRIP_ASSIGNMENT_REMOVED: "Hủy phân công",
+  DRIVER_SCHEDULE_EDITED: "Đổi lịch làm việc",
+  OPERATOR_ANNOUNCEMENT: "Điều hành",
+  TRIP_BOARDING_REMINDER: "Nhắc soát vé",
+  TRIP_ROUTE_CHANGED: "Đổi tuyến",
+  TRIP_SCHEDULE_CHANGED: "Đổi giờ chạy",
+  TRIP_CANCELLED: "Hủy chuyến",
+  TRIP_DELAYED: "Chuyến trễ",
+  TRIP_DELAYED_ALERT: "Chuyến trễ",
+  TRIP_DISRUPTED: "Chuyến gián đoạn",
+  TRIP_VEHICLE_APPROACHING: "Xe sắp tới",
+  STOP_DISABLED: "Điểm dừng đóng",
+  VEHICLE_SUBSTITUTED: "Đổi xe",
+  VEHICLE_SWAPPED: "Đổi xe",
+  BOOKING_CONFIRMED: "Booking mới",
+  BOOKING_CREATED: "Booking mới",
+  BOOKING_CANCELLED: "Booking hủy",
+  BOOKING_DISRUPTED: "Booking gián đoạn",
+  BOOKING_TRANSFERRED: "Chuyển booking",
+  PASSENGER_BOARDED: "Khách lên xe",
+  PASSENGER_NO_SHOW: "Khách vắng mặt",
+  PARCEL_LOADED: "Kiện hàng",
+  PARCEL_IN_TRANSIT: "Kiện hàng",
+  PARCEL_DELIVERED_PENDING_CONFIRM: "Kiện chờ xác nhận",
+  PARCEL_REJECTED: "Kiện bị từ chối",
+  PARCEL_RETURNED: "Kiện hoàn trả",
+  CARGO_NEAR_FULL_ALERT: "Khoang hàng gần đầy",
+  SHUTTLE_ASSIGNED: "Trung chuyển",
+  SHUTTLE_UNFULFILLED: "Trung chuyển thiếu xe",
+  SHUTTLE_WARNING: "Cảnh báo trung chuyển",
+  INCIDENT_REPORTED: "Sự cố",
+  OFF_ROUTE_ALERT: "Lệch tuyến",
+  DRIVER_STOP_DEPARTED_WITH_PENDING: "Rời điểm còn khách",
+};
+
+// Nhãn hiển thị + tiêu chí lọc. Type có trong bảng thì dùng nhãn tiếng Việt;
+// type mới/lạ thì đoán nhóm theo từ khóa, bí quá mới rơi về type thô.
 export function notificationBadgeOf(type: string): string {
+  const known = NOTIFICATION_TYPE_LABELS[type.toUpperCase()];
+  if (known) {
+    return known;
+  }
+
+  const normalized = type.toLowerCase();
+  if (normalized.includes("parcel") || normalized.includes("cargo")) {
+    return "Kiện hàng";
+  }
+  if (normalized.includes("shuttle")) {
+    return "Trung chuyển";
+  }
+  if (normalized.includes("booking") || normalized.includes("passenger")) {
+    return "Đặt vé";
+  }
+  if (normalized.includes("trip") || normalized.includes("schedule")) {
+    return "Chuyến đi";
+  }
+
   return type.replace(/[_-]+/g, " ").trim() || "Khác";
 }
 

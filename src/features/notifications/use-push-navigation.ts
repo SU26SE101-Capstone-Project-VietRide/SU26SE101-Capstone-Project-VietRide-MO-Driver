@@ -7,7 +7,8 @@ import { useSession } from "@/features/session/session-context";
 import { addNotificationResponseListener } from "./push";
 
 // Khi user chạm vào push: làm mới inbox rồi điều hướng theo data.type (BE quy định
-// SHUTTLE_ASSIGNED / BOOKING_CREATED / TRIP_ASSIGNED / TRIP_UPDATE / PARCEL_UPDATE / NOTIFICATION).
+// SHUTTLE_ASSIGNED / BOOKING_CREATED / BOOKING_CANCELLED / PASSENGER_BOARDED /
+// BOOKING_TRANSFERRED / TRIP_ASSIGNED / TRIP_UPDATE / PARCEL_UPDATE / NOTIFICATION).
 // Chỉ chạy khi đã đăng nhập.
 export function usePushNavigation() {
   const router = useRouter();
@@ -39,7 +40,37 @@ export function usePushNavigation() {
         return;
       }
 
-      if (type === "BOOKING_CREATED") {
+      if (
+        type === "BOOKING_CREATED" ||
+        type === "BOOKING_CANCELLED" ||
+        type === "PASSENGER_BOARDED" ||
+        type === "BOOKING_TRANSFERRED"
+      ) {
+        // FCM chỉ là tín hiệu — manifest/seat-map REST là source of truth
+        // (FE-REQUEST-realtime-booking-notify-RESPONSE.md). Data FCM toàn
+        // string; tripId có thì invalidate đúng chuyến, không thì thôi
+        // (refetchInterval của manifest sẽ bắt kịp).
+        const tripId = typeof data.tripId === "string" ? data.tripId : null;
+        if (tripId) {
+          void queryClient.invalidateQueries({ queryKey: ["manifest", tripId] });
+          void queryClient.invalidateQueries({ queryKey: ["seat-map", tripId] });
+          void queryClient.invalidateQueries({ queryKey: ["trip", tripId] });
+        }
+        // BOOKING_TRANSFERRED phát cho cả trip cũ và mới → làm mới thêm nếu có.
+        for (const key of ["oldTripId", "newTripId"] as const) {
+          const otherId = typeof data[key] === "string" ? data[key] : null;
+          if (otherId && otherId !== tripId) {
+            void queryClient.invalidateQueries({
+              queryKey: ["manifest", otherId],
+            });
+            void queryClient.invalidateQueries({
+              queryKey: ["seat-map", otherId],
+            });
+            void queryClient.invalidateQueries({ queryKey: ["trip", otherId] });
+          }
+        }
+        // deepLink dạng vietride://driver/trips/{tripId}/bookings/{bookingId}
+        // chưa có route tương ứng → điều hướng về màn phù hợp theo role.
         router.push(role === "DRIVER" ? "/driver/trip" : "/assistant/boarding");
         return;
       }

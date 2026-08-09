@@ -1,6 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
 
-import { getLatestLocation, getTripEta } from "@/api/tracking";
+import { getLatestLocation, getTripEta, getTripEtas } from "@/api/tracking";
 
 // ETA tới 1 stop (từ Tracking service).
 // Nguồn CHÍNH là broadcast `eta:update` qua socket — useGpsBroadcast ghi thẳng
@@ -11,6 +11,20 @@ export function useTripEta(tripId: string | null, stopId: string | null) {
     queryKey: ["tracking-eta", tripId, stopId],
     queryFn: () => getTripEta(tripId as string, stopId as string),
     enabled: tripId != null && stopId != null,
+    refetchInterval: 60_000,
+    staleTime: 0,
+  });
+}
+
+// ETA batch của mọi target còn lại (stop + bến đích). Nguồn CHÍNH là socket
+// eta:batch:update (useGpsBroadcast giữ trong state riêng); REST này để lấy
+// giá trị đầu tiên khi mở màn và làm lưới an toàn khi không có socket (màn
+// Assistant không phát GPS). Cache TTL backend là 60s nên refetch cùng nhịp.
+export function useTripEtas(tripId: string | null) {
+  return useQuery({
+    queryKey: ["tracking-etas", tripId],
+    queryFn: () => getTripEtas(tripId as string),
+    enabled: tripId != null,
     refetchInterval: 60_000,
     staleTime: 0,
   });

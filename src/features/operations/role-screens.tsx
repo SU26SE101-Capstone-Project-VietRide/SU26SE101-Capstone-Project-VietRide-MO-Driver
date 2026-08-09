@@ -9,6 +9,7 @@ import {
     Linking,
     Platform,
     Pressable,
+    ScrollView,
     StyleSheet,
     Text,
     TextInput,
@@ -22,10 +23,12 @@ import {
   INCIDENT_CATEGORIES,
   type AssistantParcelItem,
   type IncidentCategory,
+  type BookingUpdatedEvent,
   type RagRating,
   type ReportIncidentData,
   type SeatCell,
   type TripDetails,
+  type TripTargetEta,
 } from "@/api/types";
 import { EmptyCard, ErrorCard, LoadingCard } from "@/components/query-state";
 import { Fonts, Spacing, type Palette } from "@/constants/theme";
@@ -113,8 +116,94 @@ import {
   type GpsBroadcastStatus,
 } from "@/features/tracking/use-gps-broadcast";
 import { buildSimulationPath } from "@/features/tracking/fake-gps-route";
-import { useTripEta } from "@/features/tracking/use-tracking";
+import { useTripEta, useTripEtas } from "@/features/tracking/use-tracking";
 import { useTheme, useThemedStyles } from "@/hooks/use-theme";
+
+// Tách batch ETA realtime thành map theo stopId + ETA bến đích (STATION).
+// Batch đại diện toàn bộ target còn lại tại lần tính — stop không có trong
+// batch thì không có ETA realtime, màn hình fallback về planned ETA.
+function splitEtaBatch(etas: TripTargetEta[] | undefined): {
+  byStopId: Map<string, TripTargetEta>;
+  station: TripTargetEta | null;
+} {
+  const byStopId = new Map<string, TripTargetEta>();
+  let station: TripTargetEta | null = null;
+
+  for (const eta of etas ?? []) {
+    if (eta.targetKind === "STATION") {
+      station = eta;
+    } else if (eta.stopId) {
+      byStopId.set(eta.stopId, eta);
+    }
+  }
+
+  return { byStopId, station };
+}
+
+// Dòng mô tả ETA realtime: "Còn X phút • đến HH:MM", thêm "(ước tính)" khi
+// estimateQuality=FALLBACK (không có dữ liệu giao thông — vẫn hợp lệ để hiển
+// thị). Timestamp lấy nguyên từ server, KHÔNG tự cộng Date.now() + etaMinutes.
+function liveEtaLine(eta: TripTargetEta): string {
+  const base = `Còn ${eta.etaMinutes} phút • đến ${formatTimeHM(eta.estimatedArrivalTime)}`;
+  return eta.estimateQuality === "FALLBACK" ? `${base} (ước tính)` : base;
+}
+
+// Câu thông báo cho banner booking:updated. BOOKING_CREATED trả null vì đã có
+// banner riêng giàu thông tin hơn từ booking:created (legacy, BE vẫn giữ).
+function bookingUpdateBannerText(event: BookingUpdatedEvent): string | null {
+  switch (event.reason) {
+    case "BOOKING_CANCELLED":
+      return `Có booking vừa bị hủy${event.bookingCode ? ` (${event.bookingCode})` : ""}. Danh sách ghế đã được làm mới.`;
+    case "PASSENGER_BOARDED":
+      return "Có hành khách vừa được xác nhận lên xe.";
+    case "BOOKING_TRANSFERRED":
+      return "Có booking vừa được chuyển chuyến hoặc đổi ghế do đổi xe. Danh sách ghế đã được làm mới.";
+    default:
+      return null;
+  }
+}
+
+// Tóm tắt tuyến dạng dọc kiểu timeline: mỗi bến một hàng full-width để tên
+// dài ("605 Đ. Lý Thường Kiệt"…) không bị bẻ đôi trong 2 cột hẹp như trước.
+function RouteSummary({
+  originName,
+  destinationName,
+}: {
+  originName: string | null | undefined;
+  destinationName: string | null | undefined;
+}) {
+  const styles = useThemedStyles(makeStyles);
+  const theme = useTheme();
+
+  return (
+    <View style={styles.routeSummary}>
+      <View style={styles.routeEndpointRow}>
+        <MaterialIcons name="trip-origin" size={18} color={theme.primary} />
+        <View style={styles.routeEndpoint}>
+          <Text style={styles.routeEndpointLabel}>Điểm đi</Text>
+          <Text style={styles.routeEndpointName} numberOfLines={2}>
+            {originName ?? "—"}
+          </Text>
+        </View>
+      </View>
+      <View style={styles.routeConnector} />
+      <View style={styles.routeEndpointRow}>
+        <MaterialIcons name="place" size={18} color={theme.primary} />
+        <View style={styles.routeEndpoint}>
+          <Text style={styles.routeEndpointLabel}>Điểm đến</Text>
+          <Text style={styles.routeEndpointName} numberOfLines={2}>
+            {destinationName ?? "—"}
+          </Text>
+        </View>
+      </View>
+    </View>
+  );
+}
+
+// Ngưỡng nhắc xác nhận đã đến: distanceMeters do SERVER tính trong ETA batch
+// (FE không tự tính khoảng cách). Phải > 50m vì BE loại stop khỏi batch khi
+// xe cách dưới 50m — nhắc xong phải giữ (sticky) tới khi stop được chốt.
+const ARRIVAL_PROMPT_DISTANCE_M = 300;
 
 // Nhãn + tone cho trạng thái phát GPS ở màn chuyến đang chạy.
 function gpsStatusMeta(status: GpsBroadcastStatus): {
@@ -232,7 +321,6 @@ export function AssistantOverviewScreen() {
 
 export function DriverTripScreen() {
   const styles = useThemedStyles(makeStyles);
-  const theme = useTheme();
   const router = useRouter();
   const activeTrip = useActiveTrip();
   const detailsQuery = useTripDetails(activeTrip.trip?.tripId ?? null);
@@ -290,6 +378,14 @@ export function DriverTripScreen() {
     TRACKING_ENABLED ? tripId : null,
     nextStop?.stopId ?? null,
   );
+  // Batch ETA của toàn bộ target còn lại (stops + bến đích). Socket
+  // eta:batch:update là nguồn chính; REST /etas hydrate lần đầu + lưới an toàn.
+  const etasQuery = useTripEtas(TRACKING_ENABLED ? tripId : null);
+  const liveEtas = gps.etaBatch?.etas ?? etasQuery.data?.etas;
+  const { byStopId: liveStopEtas, station: stationEta } = useMemo(
+    () => splitEtaBatch(liveEtas),
+    [liveEtas],
+  );
   // Ưu tiên ETA server đẩy qua socket (server tự chọn stop kế theo guard của
   // nó); REST theo stop app đoán chỉ là dự phòng khi socket chưa có sự kiện.
   const eta = gps.eta ?? etaQuery.data?.eta ?? null;
@@ -314,6 +410,26 @@ export function DriverTripScreen() {
     gps.bookingEvent && gps.bookingEvent.eventId !== hiddenBookingEventId
       ? gps.bookingEvent
       : null;
+  // Banner cho biến động booking khác (hủy/boarded/transfer) qua
+  // booking:updated — cùng pattern tự ẩn sau 10s theo eventId.
+  const [hiddenBookingUpdateId, setHiddenBookingUpdateId] = useState<
+    string | null
+  >(null);
+  useEffect(() => {
+    const event = gps.bookingUpdate;
+    if (!event) {
+      return;
+    }
+    const timer = setTimeout(
+      () => setHiddenBookingUpdateId(event.eventId),
+      10_000,
+    );
+    return () => clearTimeout(timer);
+  }, [gps.bookingUpdate]);
+  const bookingUpdateBanner =
+    gps.bookingUpdate && gps.bookingUpdate.eventId !== hiddenBookingUpdateId
+      ? bookingUpdateBannerText(gps.bookingUpdate)
+      : null;
   // Banner trễ: ưu tiên contract mới delayStatus/delayMinutes từ gps.eta,
   // gps.delay (trip:statusChanged) là dự phòng. gps.delay=null (đã
   // DELAY_CLEARED) mà delayStatus không phải DELAYED thì không hiện banner.
@@ -335,6 +451,7 @@ export function DriverTripScreen() {
         Promise.all([
           activeTrip.refetch(),
           ...(tripId ? [detailsQuery.refetch(), routeQuery.refetch()] : []),
+          ...(TRACKING_ENABLED && tripId ? [etasQuery.refetch()] : []),
         ])
       }
     >
@@ -352,25 +469,10 @@ export function DriverTripScreen() {
       ) : details ? (
         <>
           <SurfaceCard accent delay={0}>
-            <View style={styles.routeSummary}>
-              <View style={styles.routeEndpoint}>
-                <Text style={styles.routeEndpointLabel}>Điểm đi</Text>
-                <Text style={styles.routeEndpointName} numberOfLines={2}>
-                  {details.originStation?.name ?? "—"}
-                </Text>
-              </View>
-              <MaterialIcons
-                name="arrow-forward"
-                size={22}
-                color={theme.primary}
-              />
-              <View style={styles.routeEndpoint}>
-                <Text style={styles.routeEndpointLabel}>Điểm đến</Text>
-                <Text style={styles.routeEndpointName} numberOfLines={2}>
-                  {details.destinationStation?.name ?? "—"}
-                </Text>
-              </View>
-            </View>
+            <RouteSummary
+              originName={details.originStation?.name}
+              destinationName={details.destinationStation?.name}
+            />
 
             <View style={styles.metricRow}>
               <MetricTile
@@ -533,6 +635,11 @@ export function DriverTripScreen() {
                 compact
               />
             </View>
+            {stationEta ? (
+              <Text style={styles.metaText}>
+                Bến cuối: {liveEtaLine(stationEta)}.
+              </Text>
+            ) : null}
             {isDelayed ? (
               <Text style={styles.delayText}>
                 {delayMinutes != null
@@ -553,12 +660,16 @@ export function DriverTripScreen() {
                 làm mới.
               </Text>
             ) : null}
+            {bookingUpdateBanner ? (
+              <Text style={styles.metaText}>{bookingUpdateBanner}</Text>
+            ) : null}
           </SurfaceCard>
           ) : null}
 
           <TripStopsCard
             details={details}
             nextStopId={nextStop?.stopId ?? null}
+            liveEtas={liveStopEtas}
           />
         </>
       ) : null}
@@ -944,7 +1055,8 @@ export function AssistantBoardingScreen() {
           <SettingsButton />
         </>
       }
-      // Khách đặt vé mới không có push cho manifest → kéo xuống để cập nhật.
+      // Manifest đã có push/socket invalidate + poll 25s; kéo xuống để làm
+      // mới ngay lập tức khi cần.
       onRefresh={() =>
         Promise.all([
           activeTrip.refetch(),
@@ -1141,7 +1253,11 @@ function ApiSeatGrid({
         const rows = [...new Set(deckSeats.map((seat) => seat.row))].sort(
           (a, b) => a - b,
         );
-        const maxCol = Math.max(...deckSeats.map((seat) => seat.col));
+        // Backend có xe đánh col từ 0, có xe từ 1 — vẽ từ minCol thực tế,
+        // không hardcode từ 0 kẻo sinh "lối đi" ảo bên trái làm lưới lệch phải.
+        const cols = deckSeats.map((seat) => seat.col);
+        const maxCol = Math.max(...cols);
+        const minCol = Math.min(...cols);
 
         return (
           <View key={`deck-${deck}`} style={styles.seatGrid}>
@@ -1150,7 +1266,8 @@ function ApiSeatGrid({
             ) : null}
             {rows.map((row) => (
               <View key={`row-${deck}-${row}`} style={styles.seatRow}>
-                {Array.from({ length: maxCol + 1 }, (_, col) => {
+                {Array.from({ length: maxCol - minCol + 1 }, (_, index) => {
+                  const col = minCol + index;
                   const seat = deckSeats.find(
                     (item) => item.row === row && item.col === col,
                   );
@@ -1282,7 +1399,13 @@ export function AssistantCargoScreen() {
                 title="Chọn chuyến"
                 subtitle="Kiện của ca sau cần nhận tại bến trước giờ chạy."
               />
-              <View style={styles.segmentRow}>
+              {/* Nhiều ca/ngày (có ngày 9+ ca) → chip cuộn ngang 1 dòng thay vì
+                  xếp dọc chiếm cả màn hình. */}
+              <ScrollView
+                horizontal
+                showsHorizontalScrollIndicator={false}
+                contentContainerStyle={styles.segmentScrollRow}
+              >
                 {todayTrips.map((trip) => (
                   <ActionButton
                     key={trip.tripId}
@@ -1292,7 +1415,7 @@ export function AssistantCargoScreen() {
                     onPress={() => setSelectedTripId(trip.tripId)}
                   />
                 ))}
-              </View>
+              </ScrollView>
             </SurfaceCard>
           ) : null}
 
@@ -1825,7 +1948,6 @@ function ParcelCard({
 
 export function AssistantStopsScreen() {
   const styles = useThemedStyles(makeStyles);
-  const theme = useTheme();
   const router = useRouter();
   const activeTrip = useActiveTrip();
   const tripId = activeTrip.trip?.tripId ?? null;
@@ -1862,6 +1984,68 @@ export function AssistantStopsScreen() {
     ? details.stops.filter((stop) => stop.status === "PENDING").length
     : 0;
 
+  // ETA realtime từ Tracking cache (REST /etas, refetch 60s). Màn assistant
+  // không phát GPS/socket nên REST là nguồn duy nhất; rỗng thì dùng planned.
+  const etasQuery = useTripEtas(TRACKING_ENABLED ? tripId : null);
+  const { byStopId: liveStopEtas, station: stationEta } = useMemo(
+    () => splitEtaBatch(etasQuery.data?.etas),
+    [etasQuery.data?.etas],
+  );
+  const nextStopLiveEta = nextStop
+    ? (liveStopEtas.get(nextStop.stopId) ?? null)
+    : null;
+
+  // Nhắc xác nhận khi server báo xe đã vào gần stop kế/bến cuối. Sticky theo
+  // stopId: BE loại stop khỏi batch khi cách <50m nên không được tắt nhắc chỉ
+  // vì stop biến mất khỏi batch — chỉ hết nhắc khi stop được chốt (đổi nextStop).
+  // setState qua setTimeout trong callback để tuân rule set-state-in-effect.
+  const [arrivalPromptStopId, setArrivalPromptStopId] = useState<string | null>(
+    null,
+  );
+  const [destinationPromptShown, setDestinationPromptShown] = useState(false);
+  useEffect(() => {
+    if (
+      !nextStop ||
+      !nextStopLiveEta ||
+      nextStopLiveEta.distanceMeters > ARRIVAL_PROMPT_DISTANCE_M ||
+      arrivalPromptStopId === nextStop.stopId
+    ) {
+      return;
+    }
+    const stopId = nextStop.stopId;
+    const timer = setTimeout(() => {
+      setArrivalPromptStopId(stopId);
+      // Rung nhẹ để phụ xe để ý dù đang nhìn chỗ khác trên màn hình.
+      void Haptics.notificationAsync(
+        Haptics.NotificationFeedbackType.Warning,
+      ).catch(() => undefined);
+    }, 0);
+    return () => clearTimeout(timer);
+  }, [nextStop, nextStopLiveEta, arrivalPromptStopId]);
+  useEffect(() => {
+    if (
+      destinationPromptShown ||
+      !stationEta ||
+      stationEta.distanceMeters > ARRIVAL_PROMPT_DISTANCE_M
+    ) {
+      return;
+    }
+    const timer = setTimeout(() => {
+      setDestinationPromptShown(true);
+      void Haptics.notificationAsync(
+        Haptics.NotificationFeedbackType.Warning,
+      ).catch(() => undefined);
+    }, 0);
+    return () => clearTimeout(timer);
+  }, [stationEta, destinationPromptShown]);
+  // Chỉ nhắc khi stop đó vẫn đang là điểm kế tiếp (chốt xong thì tự hết).
+  const showArrivalPrompt =
+    tripRunning &&
+    arrivalPromptStopId != null &&
+    nextStop?.stopId === arrivalPromptStopId;
+  const showDestinationPrompt =
+    tripRunning && destinationPromptShown && !arrivedAtDestination;
+
   return (
     <OperationsScreen
       title="Điểm dừng và giờ đến"
@@ -1876,23 +2060,10 @@ export function AssistantStopsScreen() {
         Promise.all([
           activeTrip.refetch(),
           ...(tripId ? [detailsQuery.refetch()] : []),
+          ...(TRACKING_ENABLED && tripId ? [etasQuery.refetch()] : []),
         ])
       }
     >
-      <SurfaceCard delay={0}>
-        <SectionTitle
-          icon="alt-route"
-          title="Đề xuất đổi tuyến"
-          subtitle="Đề xuất tuyến thay thế để điều hành duyệt khi đường bị chặn."
-        />
-        <ActionButton
-          icon="alt-route"
-          label="Mở đề xuất đổi tuyến"
-          tone="secondary"
-          onPress={() => router.push("/route-proposals")}
-        />
-      </SurfaceCard>
-
       {activeTrip.isLoading || (tripId && detailsQuery.isLoading) ? (
         <LoadingCard label="Đang tải điểm dừng…" />
       ) : !tripId ? (
@@ -1905,25 +2076,10 @@ export function AssistantStopsScreen() {
       ) : details ? (
         <>
           <SurfaceCard accent delay={0}>
-            <View style={styles.routeSummary}>
-              <View style={styles.routeEndpoint}>
-                <Text style={styles.routeEndpointLabel}>Điểm đi</Text>
-                <Text style={styles.routeEndpointName} numberOfLines={2}>
-                  {details.originStation?.name ?? "—"}
-                </Text>
-              </View>
-              <MaterialIcons
-                name="arrow-forward"
-                size={22}
-                color={theme.primary}
-              />
-              <View style={styles.routeEndpoint}>
-                <Text style={styles.routeEndpointLabel}>Điểm đến</Text>
-                <Text style={styles.routeEndpointName} numberOfLines={2}>
-                  {details.destinationStation?.name ?? "—"}
-                </Text>
-              </View>
-            </View>
+            <RouteSummary
+              originName={details.originStation?.name}
+              destinationName={details.destinationStation?.name}
+            />
 
             <View style={styles.metricRow}>
               <MetricTile
@@ -1933,7 +2089,9 @@ export function AssistantStopsScreen() {
                 }
                 hint={
                   nextStop
-                    ? `Dự kiến ${formatTimeHM(nextStop.estimatedArrivalTime)}`
+                    ? nextStopLiveEta
+                      ? `Còn ${nextStopLiveEta.etaMinutes} phút`
+                      : `Dự kiến ${formatTimeHM(nextStop.estimatedArrivalTime)}`
                     : "Còn bến cuối"
                 }
                 tone="primary"
@@ -1947,11 +2105,21 @@ export function AssistantStopsScreen() {
                 compact
               />
             </View>
+
+            {showArrivalPrompt && nextStop ? (
+              <Text style={styles.delayText}>
+                Xe đã tới gần{" "}
+                {nextStop.name || `Điểm ${nextStop.orderIndex}`} — bấm “Đã đến
+                điểm này” để xác nhận nhé.
+              </Text>
+            ) : null}
           </SurfaceCard>
 
           <TripStopsCard
             details={details}
             nextStopId={nextStop?.stopId ?? null}
+            liveEtas={liveStopEtas}
+            attentionStopId={showArrivalPrompt ? arrivalPromptStopId : null}
             onArrive={(stopId) => arriveStop.mutate(stopId)}
             actionDisabled={!tripRunning || busy}
             pendingStopId={arriveStop.isPending ? arriveStop.variables : null}
@@ -1963,6 +2131,18 @@ export function AssistantStopsScreen() {
               title="Bến cuối"
               subtitle="Xác nhận để mở khoá dỡ kiện trả tại bến"
             />
+
+            {stationEta ? (
+              <Text style={styles.metaText}>
+                {liveEtaLine(stationEta)}.
+              </Text>
+            ) : null}
+
+            {showDestinationPrompt ? (
+              <Text style={styles.delayText}>
+                Xe đã tới gần bến cuối — xác nhận khi xe vào bến nhé.
+              </Text>
+            ) : null}
 
             <Text style={styles.metaText}>
               Xác nhận tới bến KHÔNG kết thúc chuyến. Chuyến vẫn đang chạy cho
@@ -1995,6 +2175,22 @@ export function AssistantStopsScreen() {
           </SurfaceCard>
         </>
       ) : null}
+
+      {/* Chức năng unhappy-case (đường bị chặn) → đặt cuối trang, nhường vị trí
+          đầu cho luồng chính là theo dõi điểm dừng/giờ đến. */}
+      <SurfaceCard delay={240}>
+        <SectionTitle
+          icon="alt-route"
+          title="Đề xuất đổi tuyến"
+          subtitle="Đề xuất tuyến thay thế để điều hành duyệt khi đường bị chặn."
+        />
+        <ActionButton
+          icon="alt-route"
+          label="Mở đề xuất đổi tuyến"
+          tone="secondary"
+          onPress={() => router.push("/route-proposals")}
+        />
+      </SurfaceCard>
     </OperationsScreen>
   );
 }
@@ -2718,19 +2914,26 @@ function WorkScheduleSection({
   );
 }
 
-// Tiến trình tuyến từ API. Gap backend: stop chỉ có id + ETA, không có tên
-// → hiển thị "Điểm dừng {orderIndex}" kèm giờ và loại đón/trả.
+// Tiến trình tuyến từ API. Hiển thị tên Stop canonical (stops[].name — BE mới
+// đã trả); payload cũ chưa có tên thì fallback "Điểm dừng {orderIndex}".
 // Dùng chung cho màn chuyến (chỉ xem) và màn điểm dừng (có thao tác).
 // Truyền `onArrive` để bật nút xác nhận đã đến từng điểm.
+// `liveEtas` là ETA realtime theo stopId từ batch /etas hoặc eta:batch:update;
+// stop không có trong batch thì hiển thị planned ETA như cũ.
 function TripStopsCard({
   details,
   nextStopId,
+  liveEtas,
+  attentionStopId = null,
   onArrive,
   actionDisabled = false,
   pendingStopId = null,
 }: {
   details: TripDetails;
   nextStopId: string | null;
+  liveEtas?: Map<string, TripTargetEta>;
+  // Stop server báo xe đã tới gần → nhấn mạnh để crew bấm xác nhận.
+  attentionStopId?: string | null;
   onArrive?: (stopId: string) => void;
   actionDisabled?: boolean;
   pendingStopId?: string | null;
@@ -2749,6 +2952,9 @@ function TripStopsCard({
           // Điểm đã chốt (đến hoặc bỏ qua) thì không còn thao tác.
           const finalized = arrived || skipped;
           const isNext = stop.stopId === nextStopId;
+          // ETA realtime chỉ áp dụng cho stop chưa chốt; stop đã đến/bỏ qua
+          // hiển thị giờ thực tế hoặc planned như cũ.
+          const liveEta = finalized ? null : liveEtas?.get(stop.stopId);
 
           return (
             <View key={stop.stopId} style={styles.stopRow}>
@@ -2769,7 +2975,7 @@ function TripStopsCard({
                 <View style={styles.stopHeader}>
                   <View style={styles.stopNameBlock}>
                     <Text style={styles.stopTitle}>
-                      Điểm dừng {stop.orderIndex}
+                      {stop.name || `Điểm dừng ${stop.orderIndex}`}
                     </Text>
                     <Text style={styles.stopSubtitle}>
                       {[
@@ -2804,11 +3010,19 @@ function TripStopsCard({
                 <Text style={styles.stopMeta}>
                   {stop.actualArrivalTime
                     ? `Đến lúc ${formatTimeHM(stop.actualArrivalTime)}`
-                    : `Dự kiến ${formatTimeHM(stop.estimatedArrivalTime)}`}
+                    : liveEta
+                      ? liveEtaLine(liveEta)
+                      : `Dự kiến ${formatTimeHM(stop.estimatedArrivalTime)}`}
                   {stop.distanceFromOriginKm != null
                     ? ` • km ${stop.distanceFromOriginKm}`
                     : ""}
                 </Text>
+
+                {attentionStopId === stop.stopId && !finalized ? (
+                  <Text style={styles.delayText}>
+                    Xe đã ở gần điểm này — xác nhận nhé.
+                  </Text>
+                ) : null}
 
                 {onArrive && !finalized ? (
                   <ActionButton
@@ -2846,9 +3060,20 @@ const makeStyles = (c: Palette) =>
     gap: Spacing.two,
   },
   routeSummary: {
+    gap: 4,
+  },
+  routeEndpointRow: {
     flexDirection: "row",
     alignItems: "center",
     gap: Spacing.two,
+  },
+  // Đường tuyến nối 2 bến, canh giữa theo icon 18px (center ≈ 9px → trái 8px).
+  routeConnector: {
+    width: 2,
+    height: 14,
+    borderRadius: 1,
+    marginLeft: 8,
+    backgroundColor: c.border,
   },
   routeEndpoint: {
     flex: 1,
@@ -3429,6 +3654,12 @@ const makeStyles = (c: Palette) =>
     flexDirection: "row",
     flexWrap: "wrap",
     gap: Spacing.two,
+  },
+  // Hàng chip chọn ca cuộn ngang — không wrap để giữ đúng 1 dòng.
+  segmentScrollRow: {
+    flexDirection: "row",
+    gap: Spacing.two,
+    paddingRight: Spacing.two,
   },
   parcelHint: {
     color: "#FFD600",

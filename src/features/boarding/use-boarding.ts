@@ -8,6 +8,10 @@ export function useManifest(tripId: string | null) {
     queryKey: ["manifest", tripId],
     queryFn: () => getManifest(tripId as string),
     enabled: tripId != null,
+    // Fallback khi lỡ socket/FCM (FE-REQUEST-realtime-booking-notify §3.3):
+    // poll 25s để manifest không bao giờ lệch quá lâu; tín hiệu realtime
+    // (booking:updated, push) vẫn invalidate ngay khi tới.
+    refetchInterval: 25_000,
   });
 }
 

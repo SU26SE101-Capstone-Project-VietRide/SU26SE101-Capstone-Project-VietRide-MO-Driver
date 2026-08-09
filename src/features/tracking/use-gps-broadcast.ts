@@ -6,6 +6,8 @@ import type { Socket } from "socket.io-client";
 import { getTokens } from "@/api/token-storage";
 import type {
   BookingCreatedEvent,
+  BookingUpdatedEvent,
+  EtaBatchUpdateEvent,
   EtaUpdateEvent,
   GeoPoint,
   GpsUpdatePayload,
@@ -25,6 +27,8 @@ import {
   joinShuttleTracking,
   joinTripTracking,
   onBookingCreated,
+  onBookingUpdated,
+  onEtaBatchUpdate,
   onEtaUpdate,
   onShuttleEtaUpdate,
   onTripStatusChanged,
@@ -120,6 +124,10 @@ export function useGpsBroadcast(
   // guard của nó (bỏ stop ARRIVED/SKIPPED, không lùi sequence, bỏ stop cách
   // dưới 50 m) — không chắc trùng stop mà app đoán từ danh sách điểm dừng.
   const [lastEta, setLastEta] = useState<EtaUpdateEvent | null>(null);
+  // Batch ETA gần nhất (eta:batch:update) — toàn bộ stop còn lại + bến đích.
+  // Mỗi batch THAY THẾ batch trước, không merge: target biến mất khỏi batch
+  // nghĩa là ETA của nó hết hiệu lực (đã qua stop / cache hết hạn).
+  const [etaBatch, setEtaBatch] = useState<EtaBatchUpdateEvent | null>(null);
   // ETA shuttle tới điểm đón kế tiếp (chỉ nhánh shuttle).
   const [shuttleEta, setShuttleEta] = useState<ShuttleEtaUpdateEvent | null>(
     null,
@@ -128,8 +136,17 @@ export function useGpsBroadcast(
   const [bookingEvent, setBookingEvent] = useState<BookingCreatedEvent | null>(
     null,
   );
+  // Biến động booking gần nhất qua booking:updated (hủy/boarded/transfer) —
+  // dùng cho banner UI; dữ liệu thật luôn refetch từ REST.
+  const [bookingUpdate, setBookingUpdate] = useState<BookingUpdatedEvent | null>(
+    null,
+  );
   // Dedupe booking:created theo eventId (RabbitMQ at-least-once).
   const seenBookingIdsRef = useRef<Set<string>>(new Set());
+  // Dedupe booking:updated riêng — BE giữ booking:created để tương thích nên
+  // cùng một biến động có thể tới qua cả hai event (có thể trùng eventId);
+  // dùng chung set sẽ nuốt mất event tới sau của kênh còn lại.
+  const seenBookingUpdateIdsRef = useRef<Set<string>>(new Set());
   const socketRef = useRef<Socket | null>(null);
   const watchRef = useRef<Location.LocationSubscription | null>(null);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -206,15 +223,22 @@ export function useGpsBroadcast(
       if (kind === "trip") {
         unsubscribers.push(
           onEtaUpdate(socket, (event) => {
-            // Server tự chọn stop kế tiếp nên stopId có thể khác stop app đang
-            // xem; ghi đúng theo stopId trong payload, để React Query tự khớp
-            // màn hình.
-            if (event?.tripId !== id || !event.stopId) {
+            if (event?.tripId !== id) {
               return;
             }
 
+            // Target kế tiếp có thể là bến đích (targetKind=STATION, mang
+            // stationId thay vì stopId) — vẫn là ETA hợp lệ để hiển thị.
             if (!cancelled) {
               setLastEta(event);
+            }
+
+            // Chỉ ghi vào cache query theo stop khi event thực sự là stop.
+            // Server tự chọn stop kế tiếp nên stopId có thể khác stop app đang
+            // xem; ghi đúng theo stopId trong payload, để React Query tự khớp
+            // màn hình.
+            if (!event.stopId) {
+              return;
             }
 
             queryClient.setQueryData<TripEtaData>(
@@ -233,6 +257,17 @@ export function useGpsBroadcast(
                 },
               },
             );
+          }),
+        );
+
+        unsubscribers.push(
+          onEtaBatchUpdate(socket, (event) => {
+            if (event?.tripId !== id || cancelled) {
+              return;
+            }
+            // Replace nguyên batch — không merge với batch cũ (checklist
+            // migration của API-stop-arrival-time-estimates.md).
+            setEtaBatch(event);
           }),
         );
 
@@ -272,6 +307,41 @@ export function useGpsBroadcast(
             // Ghế/khách của chuyến vừa đổi — làm mới từ backend.
             void queryClient.invalidateQueries({ queryKey: ["seat-map", id] });
             void queryClient.invalidateQueries({ queryKey: ["trip", id] });
+            void queryClient.invalidateQueries({ queryKey: ["manifest", id] });
+          }),
+        );
+
+        unsubscribers.push(
+          onBookingUpdated(socket, (event) => {
+            if (event?.tripId !== id || cancelled) {
+              return;
+            }
+            if (seenBookingUpdateIdsRef.current.has(event.eventId)) {
+              return;
+            }
+            seenBookingUpdateIdsRef.current.add(event.eventId);
+            setBookingUpdate(event);
+            // Tín hiệu invalidate — manifest/seat-map REST là source of truth.
+            void queryClient.invalidateQueries({ queryKey: ["manifest", id] });
+            void queryClient.invalidateQueries({ queryKey: ["seat-map", id] });
+            void queryClient.invalidateQueries({ queryKey: ["trip", id] });
+            // Transfer đổi ghế/khách ở CẢ trip cũ và mới — invalidate luôn hai
+            // bên (nếu cache đang giữ) vì event chỉ tới room mình đã join.
+            if (event.reason === "BOOKING_TRANSFERRED") {
+              for (const otherId of [event.oldTripId, event.newTripId]) {
+                if (otherId && otherId !== id) {
+                  void queryClient.invalidateQueries({
+                    queryKey: ["manifest", otherId],
+                  });
+                  void queryClient.invalidateQueries({
+                    queryKey: ["seat-map", otherId],
+                  });
+                  void queryClient.invalidateQueries({
+                    queryKey: ["trip", otherId],
+                  });
+                }
+              }
+            }
           }),
         );
       } else {
@@ -420,6 +490,8 @@ export function useGpsBroadcast(
     target?.kind === "trip" && delay?.tripId === target.id ? delay : null;
   const currentEta =
     target?.kind === "trip" && lastEta?.tripId === target.id ? lastEta : null;
+  const currentEtaBatch =
+    target?.kind === "trip" && etaBatch?.tripId === target.id ? etaBatch : null;
   const currentShuttleEta =
     target?.kind === "shuttle" && shuttleEta?.shuttleTripId === target.id
       ? shuttleEta
@@ -428,12 +500,18 @@ export function useGpsBroadcast(
     target?.kind === "trip" && bookingEvent?.tripId === target.id
       ? bookingEvent
       : null;
+  const currentBookingUpdate =
+    target?.kind === "trip" && bookingUpdate?.tripId === target.id
+      ? bookingUpdate
+      : null;
 
   return {
     status,
     delay: currentDelay,
     eta: currentEta,
+    etaBatch: currentEtaBatch,
     shuttleEta: currentShuttleEta,
     bookingEvent: currentBooking,
+    bookingUpdate: currentBookingUpdate,
   };
 }

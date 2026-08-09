@@ -3,6 +3,7 @@ import type {
   GpsTrailData,
   LatestLocationData,
   TripEtaData,
+  TripEtasData,
   TripRouteGeometryData,
 } from "./types";
 
@@ -54,6 +55,13 @@ export function getTripTrail(
   return apiRequest<GpsTrailData>(
     `/v1/tracking/trips/${tripId}/trail${suffix}`,
   );
+}
+
+// ETA batch của mọi target còn lại: các stop PENDING theo sequence, bến đích
+// sau cùng (API-stop-arrival-time-estimates.md). Chỉ đọc Redis cache, không
+// kích hoạt Google — etas=[] khi cache lạnh/hết TTL, fallback về planned ETA.
+export function getTripEtas(tripId: string): Promise<TripEtasData> {
+  return apiRequest<TripEtasData>(`/v1/tracking/trips/${tripId}/etas`);
 }
 
 // ETA tới 1 stop (Redis). Trả eta = null nếu chưa có cache.

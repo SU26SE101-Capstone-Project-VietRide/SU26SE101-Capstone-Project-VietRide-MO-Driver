@@ -3,6 +3,8 @@ import { io, type Socket } from "socket.io-client";
 import { API_BASE_URL } from "@/api/client";
 import type {
   BookingCreatedEvent,
+  BookingUpdatedEvent,
+  EtaBatchUpdateEvent,
   EtaUpdateEvent,
   GpsUpdatePayload,
   ShuttleEtaUpdateEvent,
@@ -70,6 +72,19 @@ export function onEtaUpdate(
   };
 }
 
+// Server broadcast ETA của TOÀN BỘ target còn lại (stops + bến đích) sau mỗi
+// lần tính lại. Batch thay thế hoàn toàn batch trước — target không còn trong
+// batch mới thì ETA cũ của nó không còn hiệu lực.
+export function onEtaBatchUpdate(
+  socket: Socket,
+  handler: (event: EtaBatchUpdateEvent) => void,
+): () => void {
+  socket.on("eta:batch:update", handler);
+  return () => {
+    socket.off("eta:batch:update", handler);
+  };
+}
+
 // Server broadcast khi delay detection đánh dấu chuyến trễ.
 export function onTripStatusChanged(
   socket: Socket,
@@ -133,5 +148,18 @@ export function onBookingCreated(
   socket.on("booking:created", handler);
   return () => {
     socket.off("booking:created", handler);
+  };
+}
+
+// Server broadcast mọi biến động booking của Trip vào crew room (tạo/hủy/
+// boarded/transfer). Chỉ là tín hiệu — client dedupe eventId rồi refetch
+// manifest/seat-map REST; booking:created cũ vẫn được BE giữ để tương thích.
+export function onBookingUpdated(
+  socket: Socket,
+  handler: (event: BookingUpdatedEvent) => void,
+): () => void {
+  socket.on("booking:updated", handler);
+  return () => {
+    socket.off("booking:updated", handler);
   };
 }

@@ -86,6 +86,10 @@ export type TripStopStatus = "PENDING" | "ARRIVED" | "SKIPPED";
 
 export type TripStop = {
   stopId: string;
+  // Tên/địa chỉ Stop canonical (API-stop-arrival-time-estimates.md). Optional
+  // để không vỡ với payload cũ đã cache trước khi BE deploy field này.
+  name?: string | null;
+  address?: string | null;
   orderIndex: number;
   allowPickup: boolean;
   allowDropoff: boolean;
@@ -120,6 +124,10 @@ export type TripDetails = {
     baseFare: number;
     stops: { stopId: string; fareFromThisStop: number }[];
   };
+  // Chất lượng planned ETA của cả Trip (API-stop-arrival-time-estimates.md):
+  // TRAFFIC_AWARE = Google Routes có dữ liệu giao thông; FALLBACK = baseline
+  // của Route. FALLBACK vẫn là ETA hợp lệ, chỉ kém chính xác hơn.
+  plannedEtaQuality?: EstimateQuality | string;
 };
 
 export type SeatCell = {
@@ -531,6 +539,65 @@ export type TripEtaData = {
   eta: TripEta | null;
 };
 
+// ===== ETA batch theo target (API-stop-arrival-time-estimates.md) =====
+
+// Chất lượng ước tính: TRAFFIC_AWARE khi cả batch Google thành công, FALLBACK
+// khi dùng route projection/tốc độ hiện tại. FALLBACK vẫn hiển thị bình thường.
+export type EstimateQuality = "TRAFFIC_AWARE" | "FALLBACK";
+
+// Field chung của mọi ETA item. stopName/sequence optional theo schema tương
+// thích rolling deploy; estimateQuality khai kèm | string theo convention repo.
+export type EtaTargetCommon = {
+  tripId: string;
+  stopName?: string | null;
+  etaMinutes: number;
+  estimatedArrivalTime: string;
+  distanceMeters: number;
+  updatedAt: string;
+  estimateQuality?: EstimateQuality | string;
+};
+
+// ETA tới 1 stop trung gian — nhận diện bằng stopId.
+export type StopEta = EtaTargetCommon & {
+  targetKind: "STOP";
+  stopId: string;
+  stationId?: never;
+  sequence?: number;
+};
+
+// ETA tới bến đích — nhận diện bằng stationId, không có sequence.
+export type StationEta = EtaTargetCommon & {
+  targetKind: "STATION";
+  stationId: string;
+  stopId?: never;
+  sequence?: never;
+};
+
+export type TripTargetEta = StopEta | StationEta;
+
+// Item của REST GET /v1/tracking/trips/{tripId}/etas — có thêm delay fields.
+// STATION luôn có delayed=null, delayStatus="UNKNOWN", delayMinutes=null.
+export type RestTargetEta = TripTargetEta & {
+  delayed: boolean | null;
+  delayStatus: DelayStatus | string;
+  delayMinutes: number | null;
+};
+
+// Response của GET /etas. etas=[] khi cache lạnh/hết TTL — KHÔNG phải lỗi,
+// client fallback về planned ETA trong Trip detail.
+export type TripEtasData = {
+  etas: RestTargetEta[];
+};
+
+// Socket event eta:batch:update — item KHÔNG có delay fields (khác REST).
+// Batch đại diện TOÀN BỘ target còn lại tại lần tính: target không còn trong
+// batch mới thì client phải bỏ ETA cũ của target đó.
+export type EtaBatchUpdateEvent = {
+  tripId: string;
+  etas: TripTargetEta[];
+  updatedAt: string;
+};
+
 // Payload gửi lên qua Socket.IO event gps:update.
 export type GpsUpdatePayload = {
   tripId: string;
@@ -543,7 +610,17 @@ export type GpsUpdatePayload = {
 
 // Socket giữ delayed là boolean để client cũ không vỡ; delayStatus/delayMinutes
 // đã nằm sẵn trong TripEta (optional).
-export type EtaUpdateEvent = TripEta;
+// Contract mới phát thêm targetKind/stopName/sequence/estimateQuality, và khi
+// target kế tiếp là bến đích thì event mang stationId THAY VÌ stopId → stopId
+// phải optional, không được coi thiếu stopId là event hỏng.
+export type EtaUpdateEvent = Omit<TripEta, "stopId"> & {
+  stopId?: string;
+  stationId?: string;
+  targetKind?: "STOP" | "STATION" | string;
+  stopName?: string | null;
+  sequence?: number;
+  estimateQuality?: EstimateQuality | string;
+};
 
 // Broadcast trip:statusChanged — status là "DELAYED" khi bị đánh dấu trễ và
 // "DELAY_CLEARED" khi hết trễ (contract mới). Client phải xử lý cả hai.
@@ -675,6 +752,36 @@ export type BookingCreatedEvent = {
   };
   driverUserId: string;
   assistantUserId: string | null;
+};
+
+// Lý do booking:updated (FE-REQUEST-realtime-booking-notify-RESPONSE.md).
+// Khai kèm | string ở nơi dùng để không vỡ khi BE thêm reason mới.
+export type BookingUpdatedReason =
+  | "BOOKING_CREATED"
+  | "BOOKING_CANCELLED"
+  | "PASSENGER_BOARDED"
+  | "BOOKING_TRANSFERRED";
+
+// Broadcast booking:updated vào crew room — CHỈ là tín hiệu invalidate/refetch,
+// manifest/seat-map REST mới là source of truth. Contract chỉ cam kết
+// tripId + reason + eventId; field bổ sung tùy reason nên đều optional.
+export type BookingUpdatedEvent = {
+  eventId: string;
+  tripId: string;
+  reason: BookingUpdatedReason | string;
+  // BOOKING_CREATED
+  bookingCode?: string;
+  seatNumbers?: string[];
+  // BOOKING_CANCELLED
+  cancellationReason?: string | null;
+  // PASSENGER_BOARDED
+  passengerRecordId?: string;
+  ticketCode?: string;
+  boardedAt?: string;
+  // BOOKING_TRANSFERRED (emit vào crew room của cả Trip cũ và mới)
+  oldTripId?: string;
+  newTripId?: string;
+  transfers?: unknown[];
 };
 
 // ===== Notification (prefix /v1) =====
