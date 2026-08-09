@@ -16,6 +16,11 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { ErrorCard, LoadingCard } from "@/components/query-state";
 import { Fonts, Spacing, type Palette } from "@/constants/theme";
 import {
+    invalidationKeysForAction,
+    parseNotificationAction,
+    resolveActionHref,
+} from "@/features/notifications/notification-action";
+import {
     formatRelativeTime,
     notificationBadgeOf,
     notificationToneOf,
@@ -86,6 +91,8 @@ export default function NotificationsScreen() {
         tone: notificationToneOf(item.type),
         time: formatRelativeTime(item.createdAt, now),
         read: item.readAt != null,
+        // Phase 11: điều hướng theo action của BE, không tự suy từ title/body.
+        action: parseNotificationAction(item.action),
       })),
     [listQuery.data, now],
   );
@@ -99,6 +106,24 @@ export default function NotificationsScreen() {
 
     if (unreadIds.length > 0) {
       markAllRead.mutate(unreadIds);
+    }
+  };
+
+  // Chạm một thông báo: đánh dấu đã đọc rồi đi thẳng tới màn nghiệp vụ theo
+  // action (Phase 11). Action không có màn đích trong app crew (ví, gói đăng ký,
+  // NONE) → ở lại inbox, user vẫn đọc được nội dung ngay tại đây.
+  const handleOpen = (notification: (typeof notifications)[number]) => {
+    if (!notification.read) {
+      markRead.mutate(notification.id);
+    }
+
+    for (const queryKey of invalidationKeysForAction(notification.action)) {
+      void queryClient.invalidateQueries({ queryKey });
+    }
+
+    const href = resolveActionHref(notification.action, role);
+    if (href) {
+      router.push(href);
     }
   };
 
@@ -234,11 +259,7 @@ export default function NotificationsScreen() {
               >
                 <Pressable
                   accessibilityRole="button"
-                  onPress={() => {
-                    if (!notification.read) {
-                      markRead.mutate(notification.id);
-                    }
-                  }}
+                  onPress={() => handleOpen(notification)}
                   style={[
                     styles.item,
                     notification.read

@@ -9,7 +9,6 @@ import {
     Linking,
     Platform,
     Pressable,
-    ScrollView,
     StyleSheet,
     Text,
     TextInput,
@@ -46,14 +45,17 @@ import {
 import { SUPPORT_QUICK_PROMPTS } from "@/features/operations/operations-context";
 import { useUnreadNotificationsCount } from "@/features/notifications/use-notifications";
 import {
+    WEEKDAY_FULL,
+    WEEKDAY_SHORT,
     formatTimeHM,
     isoDateOf,
     mapAssignmentRoleLabel,
     normalizeTripStatus,
     tripStatusMeta,
 } from "@/features/trips/trip-format";
+import { useSelectedTrip } from "@/features/trips/selected-trip-context";
+import { TripPicker } from "@/features/trips/trip-picker";
 import {
-    useActiveTrip,
     useDriverSchedule,
     useSeatMap,
     useTripDetails,
@@ -322,7 +324,7 @@ export function AssistantOverviewScreen() {
 export function DriverTripScreen() {
   const styles = useThemedStyles(makeStyles);
   const router = useRouter();
-  const activeTrip = useActiveTrip();
+  const activeTrip = useSelectedTrip();
   const detailsQuery = useTripDetails(activeTrip.trip?.tripId ?? null);
   const details = detailsQuery.data;
 
@@ -468,6 +470,8 @@ export function DriverTripScreen() {
         <ErrorCard onRetry={() => void detailsQuery.refetch()} />
       ) : details ? (
         <>
+          <TripPicker subtitle="Chọn ca cần điều hành trong ngày." />
+
           <SurfaceCard accent delay={0}>
             <RouteSummary
               originName={details.originStation?.name}
@@ -703,7 +707,7 @@ function IncidentReportScreen({
 }) {
   const styles = useThemedStyles(makeStyles);
   const theme = useTheme();
-  const activeTrip = useActiveTrip();
+  const activeTrip = useSelectedTrip();
   const tripId = activeTrip.trip?.tripId ?? null;
   const details = useTripDetails(tripId).data;
   const incident = useReportIncident(tripId);
@@ -980,7 +984,7 @@ type ScanResult = { kind: "success" | "empty"; text: string };
 export function AssistantBoardingScreen() {
   const styles = useThemedStyles(makeStyles);
   const theme = useTheme();
-  const activeTrip = useActiveTrip();
+  const activeTrip = useSelectedTrip();
   const tripId = activeTrip.trip?.tripId ?? null;
   const manifestQuery = useManifest(tripId);
   const seatMapQuery = useSeatMap(tripId);
@@ -1075,6 +1079,8 @@ export function AssistantBoardingScreen() {
         />
       ) : (
         <>
+          <TripPicker subtitle="Chọn ca cần soát vé trong ngày." />
+
           <SurfaceCard accent delay={0}>
             <View style={styles.metricRowBoarding}>
               <MetricTile
@@ -1309,19 +1315,11 @@ function ApiSeatGrid({
 
 export function AssistantCargoScreen() {
   const styles = useThemedStyles(makeStyles);
-  const activeTrip = useActiveTrip();
   // Phụ xe có thể chạy nhiều ca/ngày, và kiện của ca sau phải được check-in
-  // TRƯỚC giờ khởi hành (khi ca khác có thể đang active) → cho chọn chuyến
-  // thay vì khóa cứng vào chuyến active. Mặc định vẫn là chuyến active.
-  const today = isoDateOf(new Date());
-  const scheduleQuery = useDriverSchedule(today, today);
-  const todayTrips = scheduleQuery.data?.trips ?? [];
-  const [selectedTripId, setSelectedTripId] = useState<string | null>(null);
-  const tripId =
-    selectedTripId ??
-    activeTrip.trip?.tripId ??
-    todayTrips[0]?.tripId ??
-    null;
+  // TRƯỚC giờ khởi hành (khi ca khác có thể đang active) → chuyến thao tác lấy
+  // từ bộ chọn dùng chung, không khóa cứng vào chuyến app tự đoán.
+  const activeTrip = useSelectedTrip();
+  const tripId = activeTrip.tripId;
   const parcelsQuery = useAssistantTripParcels(tripId);
   const items = parcelsQuery.data?.items ?? [];
 
@@ -1374,7 +1372,6 @@ export function AssistantCargoScreen() {
       onRefresh={() =>
         Promise.all([
           activeTrip.refetch(),
-          scheduleQuery.refetch(),
           ...(tripId ? [parcelsQuery.refetch()] : []),
         ])
       }
@@ -1392,32 +1389,7 @@ export function AssistantCargoScreen() {
         <ErrorCard onRetry={() => void parcelsQuery.refetch()} />
       ) : (
         <>
-          {todayTrips.length > 1 ? (
-            <SurfaceCard delay={0}>
-              <SectionTitle
-                icon="alt-route"
-                title="Chọn chuyến"
-                subtitle="Kiện của ca sau cần nhận tại bến trước giờ chạy."
-              />
-              {/* Nhiều ca/ngày (có ngày 9+ ca) → chip cuộn ngang 1 dòng thay vì
-                  xếp dọc chiếm cả màn hình. */}
-              <ScrollView
-                horizontal
-                showsHorizontalScrollIndicator={false}
-                contentContainerStyle={styles.segmentScrollRow}
-              >
-                {todayTrips.map((trip) => (
-                  <ActionButton
-                    key={trip.tripId}
-                    label={`${formatTimeHM(trip.departureDateTime)} • ${tripStatusMeta(trip.status).label}`}
-                    tone={trip.tripId === tripId ? "primary" : "secondary"}
-                    small
-                    onPress={() => setSelectedTripId(trip.tripId)}
-                  />
-                ))}
-              </ScrollView>
-            </SurfaceCard>
-          ) : null}
+          <TripPicker subtitle="Kiện của ca sau cần nhận tại bến trước giờ chạy." />
 
           <SurfaceCard delay={60}>
             <SectionTitle
@@ -1949,7 +1921,7 @@ function ParcelCard({
 export function AssistantStopsScreen() {
   const styles = useThemedStyles(makeStyles);
   const router = useRouter();
-  const activeTrip = useActiveTrip();
+  const activeTrip = useSelectedTrip();
   const tripId = activeTrip.trip?.tripId ?? null;
   const detailsQuery = useTripDetails(tripId);
   const details = detailsQuery.data;
@@ -2075,6 +2047,8 @@ export function AssistantStopsScreen() {
         />
       ) : details ? (
         <>
+          <TripPicker subtitle="Chọn ca cần xem điểm dừng." />
+
           <SurfaceCard accent delay={0}>
             <RouteSummary
               originName={details.originStation?.name}
@@ -2530,18 +2504,6 @@ export function SettingsButton() {
     </Pressable>
   );
 }
-
-// Nhãn thứ trong tuần (tuần bắt đầu Thứ Hai để khớp lịch VN).
-const WEEKDAY_SHORT = ["T2", "T3", "T4", "T5", "T6", "T7", "CN"];
-const WEEKDAY_FULL = [
-  "Chủ nhật",
-  "Thứ Hai",
-  "Thứ Ba",
-  "Thứ Tư",
-  "Thứ Năm",
-  "Thứ Sáu",
-  "Thứ Bảy",
-];
 
 function isoOf(date: Date): string {
   const year = date.getFullYear();

@@ -10,7 +10,7 @@ import {
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { Fonts, Spacing, type Palette } from "@/constants/theme";
-import { useActiveTrip } from "@/features/trips/use-trips";
+import { useSelectedTrip } from "@/features/trips/selected-trip-context";
 import { useTheme, useThemedStyles } from "@/hooks/use-theme";
 
 import { TripRouteMap } from "./trip-route-map";
@@ -23,7 +23,7 @@ export function RouteMapScreen() {
   const styles = useThemedStyles(makeStyles);
   const insets = useSafeAreaInsets();
 
-  const activeTrip = useActiveTrip();
+  const activeTrip = useSelectedTrip();
   const tripId = activeTrip.trip?.tripId ?? null;
   const routeQuery = useTripRouteGeometry(tripId);
 

@@ -14,6 +14,7 @@ import {
     useSession,
 } from "@/features/session/session-context";
 import { ThemeModeProvider, useThemeMode } from "@/features/theme/theme-mode";
+import { SelectedTripProvider } from "@/features/trips/selected-trip-context";
 import { useTheme } from "@/hooks/use-theme";
 
 // Cache mặc định: dữ liệu vận hành đổi thường xuyên nên staleTime ngắn;
@@ -98,10 +99,13 @@ function AppSessionGate() {
   return (
     // key theo crewId: đổi tài khoản là remount cả cây điều hướng, không sót
     // state màn hình của phiên trước (trước đây key nằm ở OperationsProvider
-    // mock — provider đã xoá nhưng hành vi reset này phải giữ).
-    <Stack key={session.crewId} screenOptions={{ headerShown: false }}>
-      {/* Màn Thông báo dùng chung cho cả Driver và Assistant, dựng header riêng. */}
-      <Stack.Screen name="notifications" />
-    </Stack>
+    // mock — provider đã xoá nhưng hành vi reset này phải giữ). Provider nằm
+    // TRONG key này để chuyến đang chọn cũng reset theo phiên.
+    <SelectedTripProvider key={session.crewId}>
+      <Stack screenOptions={{ headerShown: false }}>
+        {/* Màn Thông báo dùng chung cho cả Driver và Assistant, dựng header riêng. */}
+        <Stack.Screen name="notifications" />
+      </Stack>
+    </SelectedTripProvider>
   );
 }

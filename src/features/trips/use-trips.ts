@@ -53,24 +53,51 @@ export function useSeatMap(tripId: string | null) {
 }
 
 // Chuyến "đang hoạt động" của crew: ưu tiên chuyến đang chạy/đang đón khách
-// (IN_PROGRESS hoặc BOARDING), fallback chuyến sắp khởi hành gần nhất trong
-// hôm nay. Dùng cho màn Chuyến đang chạy + Boarding.
+// (IN_PROGRESS hoặc BOARDING), fallback chuyến sắp khởi hành gần nhất.
+//
+// Khung ngày lấy TỪ HÔM QUA chứ không chỉ hôm nay: chuyến đêm khởi hành 22:30
+// và tới nơi 03:58 hôm sau vẫn đang chạy lúc 2 giờ sáng, nhưng nó nằm trong
+// lịch NGÀY HÔM TRƯỚC. Chỉ quét hôm nay thì đúng lúc tài xế cần màn điều hành
+// nhất lại mất chuyến, và app nhảy sang ca sáng kế tiếp.
+// Chuyến hôm qua đã xong không lọt vào: COMPLETED không khớp nhánh active, còn
+// nhánh "sắp tới" đã lọc theo estimatedArrivalTime > now.
+// Xe trễ vài tiếng vẫn là chuyến hiện tại; quá 6 tiếng so với giờ đến dự kiến
+// thì coi như dữ liệu kẹt, không phải chuyến đang chạy nữa.
+const STALE_ACTIVE_MS = 6 * 60 * 60 * 1000;
+
 export function useActiveTrip() {
-  const today = isoDateOf(new Date());
-  const query = useDriverSchedule(today, today);
+  const now = new Date();
+  const today = isoDateOf(now);
+  const yesterday = isoDateOf(new Date(now.getTime() - 24 * 60 * 60 * 1000));
+  const query = useDriverSchedule(yesterday, today);
 
   const trip = useMemo<ScheduleTrip | null>(() => {
     const trips = query.data?.trips ?? [];
     // Chốt "bây giờ" mỗi lần data đổi — tránh gọi impure Date.now() khi render.
     const now = new Date().getTime();
 
-    const active = trips.find((item) => {
-      const status = normalizeTripStatus(item.status);
-      return status === "IN_PROGRESS" || status === "BOARDING";
-    });
+    // Chuyến hôm qua bị kẹt ở BOARDING/IN_PROGRESS (crew quên bấm hoàn tất) sẽ
+    // chiếm chỗ chuyến hôm nay vĩnh viễn nếu chỉ xét status. Chấp nhận trễ tối
+    // đa STALE_ACTIVE_MS so với giờ đến dự kiến — xe chạy trễ vài tiếng vẫn là
+    // chuyến hiện tại, còn chuyến của đêm trước thì không.
+    const active = trips
+      .filter((item) => {
+        const status = normalizeTripStatus(item.status);
+        return status === "IN_PROGRESS" || status === "BOARDING";
+      })
+      .filter(
+        (item) =>
+          new Date(item.estimatedArrivalTime).getTime() >= now - STALE_ACTIVE_MS,
+      )
+      // Nhiều chuyến cùng đang mở → lấy chuyến khởi hành gần hiện tại nhất.
+      .sort(
+        (a, b) =>
+          new Date(b.departureDateTime).getTime() -
+          new Date(a.departureDateTime).getTime(),
+      );
 
-    if (active) {
-      return active;
+    if (active[0]) {
+      return active[0];
     }
 
     // Bỏ chuyến đã hủy/gián đoạn khỏi danh sách "sắp tới".

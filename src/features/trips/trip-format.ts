@@ -11,6 +11,29 @@ export type NormalizedTripStatus =
   | "DISRUPTED"
   | "UNKNOWN";
 
+// Nhãn thứ trong tuần (tuần bắt đầu Thứ Hai để khớp lịch VN).
+export const WEEKDAY_SHORT = ["T2", "T3", "T4", "T5", "T6", "T7", "CN"];
+export const WEEKDAY_FULL = [
+  "Chủ nhật",
+  "Thứ Hai",
+  "Thứ Ba",
+  "Thứ Tư",
+  "Thứ Năm",
+  "Thứ Sáu",
+  "Thứ Bảy",
+];
+
+// "Thứ Hai, 10/8" — cùng cách viết với tiêu đề ngày ở màn Lịch làm việc.
+export function formatTripDayLabel(iso: string): string {
+  const date = new Date(iso);
+
+  if (Number.isNaN(date.getTime())) {
+    return "Không rõ ngày";
+  }
+
+  return `${WEEKDAY_FULL[date.getDay()]}, ${date.getDate()}/${date.getMonth() + 1}`;
+}
+
 export function isoDateOf(date: Date): string {
   const year = date.getFullYear();
   const month = `${date.getMonth() + 1}`.padStart(2, "0");

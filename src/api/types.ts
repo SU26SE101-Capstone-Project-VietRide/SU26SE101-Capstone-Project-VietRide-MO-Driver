@@ -786,6 +786,22 @@ export type BookingUpdatedEvent = {
 
 // ===== Notification (prefix /v1) =====
 
+// Contract điều hướng Phase 11: BE trả action nghiệp vụ, FE tự map sang route.
+// Thiếu/sai id, hoặc loại chưa có màn đích → BE trả { type: "NONE", params: {} }.
+export type NotificationAction =
+  | { type: "OPEN_BOOKING_DETAIL"; params: { bookingId: string } }
+  | {
+      type: "OPEN_CREW_TRIP_BOOKING";
+      params: { tripId: string; bookingId: string };
+    }
+  | { type: "OPEN_TRIP_DETAIL"; params: { tripId: string } }
+  | { type: "OPEN_TRIP_TRACKING"; params: { tripId: string } }
+  | { type: "OPEN_PARCEL_DETAIL"; params: { parcelId: string } }
+  | { type: "OPEN_WALLET"; params: Record<string, never> }
+  | { type: "OPEN_SUBSCRIPTION"; params: Record<string, never> }
+  | { type: "OPEN_SHUTTLE_TRACKING"; params: { shuttleTripId: string } }
+  | { type: "NONE"; params: Record<string, never> };
+
 export type AppNotification = {
   id: string;
   userId: string;
@@ -794,6 +810,8 @@ export type AppNotification = {
   body: string;
   // Backend trả null khi cột DB null → phải nullable, tránh crash khi truy cập.
   data: Record<string, unknown> | null;
+  // Optional: notification cũ / BE chưa deploy Phase 11 vẫn thiếu field này.
+  action?: NotificationAction | null;
   readAt: string | null;
   createdAt: string;
 };

@@ -21,7 +21,7 @@ import {
   SurfaceCard,
 } from "@/features/operations/ui";
 import { normalizeTripStatus } from "@/features/trips/trip-format";
-import { useActiveTrip } from "@/features/trips/use-trips";
+import { useSelectedTrip } from "@/features/trips/selected-trip-context";
 import { useTheme, useThemedStyles } from "@/hooks/use-theme";
 
 import { AlternativeRouteMap } from "./alternative-route-map";
@@ -48,7 +48,7 @@ export function RouteProposalScreen() {
   const theme = useTheme();
   const router = useRouter();
 
-  const activeTrip = useActiveTrip();
+  const activeTrip = useSelectedTrip();
   const tripId = activeTrip.trip?.tripId ?? null;
 
   const routesQuery = useAlternativeRoutes(tripId);
