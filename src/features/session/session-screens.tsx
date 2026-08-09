@@ -36,6 +36,7 @@ export function LoginScreen() {
   const { isAuthenticated, login, role } = useSession();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const [showPassword, setShowPassword] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
 
@@ -107,16 +108,34 @@ export function LoginScreen() {
 
             <View style={styles.inputGroup}>
               <Text style={styles.inputLabel}>Mật khẩu</Text>
-              <TextInput
-                autoCapitalize="none"
-                autoCorrect={false}
-                placeholder="••••••••"
-                placeholderTextColor={theme.placeholder}
-                secureTextEntry
-                style={styles.input}
-                value={password}
-                onChangeText={setPassword}
-              />
+              {/* Cùng pattern con mắt hiện/ẩn với forgot-password-screen. */}
+              <View style={styles.passwordField}>
+                <TextInput
+                  autoCapitalize="none"
+                  autoCorrect={false}
+                  placeholder="••••••••"
+                  placeholderTextColor={theme.placeholder}
+                  secureTextEntry={!showPassword}
+                  style={[styles.input, styles.passwordInput]}
+                  value={password}
+                  onChangeText={setPassword}
+                />
+                <Pressable
+                  accessibilityRole="button"
+                  accessibilityLabel={
+                    showPassword ? "Ẩn mật khẩu" : "Hiện mật khẩu"
+                  }
+                  hitSlop={8}
+                  onPress={() => setShowPassword((visible) => !visible)}
+                  style={styles.passwordToggle}
+                >
+                  <MaterialIcons
+                    name={showPassword ? "visibility-off" : "visibility"}
+                    size={22}
+                    color={theme.textSecondary}
+                  />
+                </Pressable>
+              </View>
             </View>
           </View>
 
@@ -127,7 +146,9 @@ export function LoginScreen() {
             </View>
           ) : null}
 
-          <View style={styles.actionRow}>
+          {/* Xếp dọc: nút chính full-width, link phụ nằm dưới — tránh chia đôi
+              bề ngang làm "Quên mật khẩu?" gãy dòng. */}
+          <View style={styles.actionStack}>
             <ActionButton
               label={submitting ? "Đang đăng nhập…" : "Đăng nhập"}
               tone="primary"
@@ -356,6 +377,19 @@ const makeStyles = (c: Palette) =>
       flexDirection: "row",
       flexWrap: "wrap",
       gap: Spacing.two,
+    },
+    actionStack: {
+      gap: Spacing.two,
+    },
+    passwordField: {
+      justifyContent: "center",
+    },
+    passwordInput: {
+      paddingRight: 52,
+    },
+    passwordToggle: {
+      position: "absolute",
+      right: Spacing.three,
     },
     accountHeader: {
       flexDirection: "row",
