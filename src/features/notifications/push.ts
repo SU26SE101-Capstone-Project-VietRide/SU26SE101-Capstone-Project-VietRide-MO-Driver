@@ -121,6 +121,30 @@ export function addNotificationResponseListener(
   return () => subscription.remove();
 }
 
+// Đăng ký lắng nghe khi push TỚI lúc app đang mở (foreground) — khác listener
+// trên (chờ user CHẠM). Dùng để invalidate data ngay khi có tín hiệu, không
+// bắt user phải bấm vào thông báo. Trả hàm cleanup. No-op ở Expo Go / web.
+export function addNotificationForegroundListener(
+  handler: (data: PushData) => void,
+): () => void {
+  if (isExpoGo || Platform.OS === "web") {
+    return () => {};
+  }
+
+  const Notifications = loadNotifications();
+
+  const subscription = Notifications.addNotificationReceivedListener(
+    (notification) => {
+      const data = notification.request.content.data;
+      if (data) {
+        handler(data as PushData);
+      }
+    },
+  );
+
+  return () => subscription.remove();
+}
+
 // Gỡ token khỏi backend khi logout. Gọi TRƯỚC khi xóa access token (cần auth).
 export async function unregisterPushToken(): Promise<void> {
   if (!currentFcmToken) {

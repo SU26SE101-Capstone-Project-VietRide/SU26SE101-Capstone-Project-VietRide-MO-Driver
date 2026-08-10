@@ -117,6 +117,7 @@ import {
   useGpsBroadcast,
   type GpsBroadcastStatus,
 } from "@/features/tracking/use-gps-broadcast";
+import { useCrewBookingEvents } from "@/features/tracking/use-crew-booking-events";
 import { buildSimulationPath } from "@/features/tracking/fake-gps-route";
 import { useTripEta, useTripEtas } from "@/features/tracking/use-tracking";
 import { useTheme, useThemedStyles } from "@/hooks/use-theme";
@@ -993,6 +994,51 @@ export function AssistantBoardingScreen() {
   const [scanResult, setScanResult] = useState<ScanResult | null>(null);
   const [scannerOpen, setScannerOpen] = useState(false);
 
+  // Socket crew room listen-only: phụ xe không có màn nào mount useGpsBroadcast
+  // (hook đó chỉ ở màn Chuyến của driver) nên thiếu cái này thì màn Đón khách
+  // chỉ còn poll 25s, không có realtime tức thì khi khách đặt/hủy vé.
+  const booking = useCrewBookingEvents(tripId);
+  // Banner tự ẩn sau 10s theo eventId — cùng pattern với DriverTripScreen
+  // (data ghế đã được hook invalidate rồi, banner chỉ để báo).
+  const [hiddenBookingEventId, setHiddenBookingEventId] = useState<
+    string | null
+  >(null);
+  useEffect(() => {
+    const event = booking.bookingEvent;
+    if (!event) {
+      return;
+    }
+    const timer = setTimeout(
+      () => setHiddenBookingEventId(event.eventId),
+      10_000,
+    );
+    return () => clearTimeout(timer);
+  }, [booking.bookingEvent]);
+  const bookingBanner =
+    booking.bookingEvent &&
+    booking.bookingEvent.eventId !== hiddenBookingEventId
+      ? booking.bookingEvent
+      : null;
+  const [hiddenBookingUpdateId, setHiddenBookingUpdateId] = useState<
+    string | null
+  >(null);
+  useEffect(() => {
+    const event = booking.bookingUpdate;
+    if (!event) {
+      return;
+    }
+    const timer = setTimeout(
+      () => setHiddenBookingUpdateId(event.eventId),
+      10_000,
+    );
+    return () => clearTimeout(timer);
+  }, [booking.bookingUpdate]);
+  const bookingUpdateBanner =
+    booking.bookingUpdate &&
+    booking.bookingUpdate.eventId !== hiddenBookingUpdateId
+      ? bookingUpdateBannerText(booking.bookingUpdate)
+      : null;
+
   const items = useMemo(
     () => manifestQuery.data?.items ?? [],
     [manifestQuery.data],
@@ -1105,6 +1151,16 @@ export function AssistantBoardingScreen() {
                 compact
               />
             </View>
+            {bookingBanner ? (
+              <Text style={styles.metaText}>
+                Có booking mới: {bookingBanner.bookingCode} ·{" "}
+                {bookingBanner.passengerCount} khách. Danh sách ghế đã được
+                làm mới.
+              </Text>
+            ) : null}
+            {bookingUpdateBanner ? (
+              <Text style={styles.metaText}>{bookingUpdateBanner}</Text>
+            ) : null}
           </SurfaceCard>
 
           <SurfaceCard delay={90}>
