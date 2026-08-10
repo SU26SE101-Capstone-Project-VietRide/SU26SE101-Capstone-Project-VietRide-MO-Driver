@@ -99,6 +99,9 @@ export function TripDetailScreen() {
           <SurfaceCard accent>
             <View style={styles.headerRow}>
               <StatusChip label={statusMeta.label} tone={statusMeta.tone} />
+              {details.alternativeRouteId ? (
+                <StatusChip label="Tuyến thay thế" tone="warning" />
+              ) : null}
               {isActiveTrip ? (
                 <Text style={styles.activeHint}>Chuyến đang điều hành</Text>
               ) : null}

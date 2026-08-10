@@ -474,6 +474,9 @@ export function DriverTripScreen() {
           <TripPicker subtitle="Chọn ca cần điều hành trong ngày." />
 
           <SurfaceCard accent delay={0}>
+            {details.alternativeRouteId ? (
+              <StatusChip label="Đang chạy tuyến thay thế" tone="warning" />
+            ) : null}
             <RouteSummary
               originName={details.originStation?.name}
               destinationName={details.destinationStation?.name}
@@ -2106,6 +2109,9 @@ export function AssistantStopsScreen() {
           <TripPicker subtitle="Chọn ca cần xem điểm dừng." />
 
           <SurfaceCard accent delay={0}>
+            {details.alternativeRouteId ? (
+              <StatusChip label="Đang chạy tuyến thay thế" tone="warning" />
+            ) : null}
             <RouteSummary
               originName={details.originStation?.name}
               destinationName={details.destinationStation?.name}

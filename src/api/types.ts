@@ -113,6 +113,10 @@ export type TripDetails = {
   baseFare: number;
   originStation: { id: string; name: string | null };
   destinationStation: { id: string; name: string | null };
+  // Tuyến thay thế đang hiệu lực (FE-REQUEST-alternative-route-trip-stops-RESPONSE.md).
+  // null/thiếu = chuyến chạy route chính. Khi có, stops[] và route-geometry đã
+  // là dữ liệu của tuyến thay thế — chỉ cần badge, không phải rẽ nhánh dữ liệu.
+  alternativeRouteId?: string | null;
   stops: TripStop[];
   seatSummary: { totalSeats: number; availableSeats: number };
   returnRouteId?: string | null;

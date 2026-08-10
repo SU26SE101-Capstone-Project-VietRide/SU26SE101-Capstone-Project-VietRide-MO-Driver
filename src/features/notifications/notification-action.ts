@@ -181,6 +181,11 @@ export function invalidationKeysForAction(
 
   if (tripId) {
     keys.push(["manifest", tripId], ["seat-map", tripId], ["trip", tripId]);
+    // Đổi tuyến (TRIP_UPDATE + notificationType=TRIP_ROUTE_CHANGED) đổi cả
+    // polyline — bản đồ/FAKE_GPS không được giữ đường cũ. FCM data không cần
+    // branch theo notificationType: mọi biến động trip đều nên làm mới geometry,
+    // query chỉ refetch khi màn liên quan đang mở nên chi phí không đáng kể.
+    keys.push(["trip-route-geometry", tripId]);
   }
 
   if (action.type === "OPEN_SHUTTLE_TRACKING") {
