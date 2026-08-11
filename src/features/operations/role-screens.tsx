@@ -2965,11 +2965,45 @@ function TripStopsCard({
   const styles = useThemedStyles(makeStyles);
   const stops = [...details.stops].sort((a, b) => a.orderIndex - b.orderIndex);
 
+  // Điểm đi / bến cuối là 2 mốc cố định của timeline — tuyến đi thẳng (0 điểm
+  // dừng giữa) vẫn có hành trình hoàn chỉnh thay vì card trống. Hai mốc này chỉ
+  // hiển thị, không có nút: xác nhận tới bến cuối đã có card "Bến cuối" riêng lo.
+  const tripStatus = normalizeTripStatus(details.status);
+  const departed = tripStatus === "IN_PROGRESS" || tripStatus === "COMPLETED";
+  const tripCompleted = tripStatus === "COMPLETED";
+
   return (
     <SurfaceCard delay={120}>
       <SectionTitle icon="route" title="Tiến trình tuyến" />
 
       <View style={styles.stopStack}>
+        <View style={styles.stopRow}>
+          <View style={styles.stopMarkerColumn}>
+            <View
+              style={[styles.stopMarker, departed && styles.stopMarkerCompleted]}
+            />
+            <View style={departed ? styles.stopLineActive : styles.stopLine} />
+          </View>
+
+          <View style={styles.stopContent}>
+            <View style={styles.stopHeader}>
+              <View style={styles.stopNameBlock}>
+                <Text style={styles.stopTitle}>
+                  {details.originStation?.name || "Điểm đi"}
+                </Text>
+                <Text style={styles.stopSubtitle}>Điểm xuất phát</Text>
+              </View>
+              <StatusChip
+                label={departed ? "Đã xuất phát" : "Điểm đi"}
+                tone={departed ? "success" : "neutral"}
+              />
+            </View>
+            <Text style={styles.stopMeta}>
+              {`Khởi hành ${formatTimeHM(details.departureDateTime)}`}
+            </Text>
+          </View>
+        </View>
+
         {stops.map((stop) => {
           const arrived = stop.status === "ARRIVED";
           const skipped = stop.status === "SKIPPED";
@@ -3066,6 +3100,35 @@ function TripStopsCard({
             </View>
           );
         })}
+
+        <View style={styles.stopRow}>
+          <View style={styles.stopMarkerColumn}>
+            <View
+              style={[
+                styles.stopMarker,
+                tripCompleted && styles.stopMarkerCompleted,
+              ]}
+            />
+          </View>
+
+          <View style={styles.stopContent}>
+            <View style={styles.stopHeader}>
+              <View style={styles.stopNameBlock}>
+                <Text style={styles.stopTitle}>
+                  {details.destinationStation?.name || "Bến cuối"}
+                </Text>
+                <Text style={styles.stopSubtitle}>Bến cuối</Text>
+              </View>
+              <StatusChip
+                label={tripCompleted ? "Đã đến" : "Bến cuối"}
+                tone={tripCompleted ? "success" : "neutral"}
+              />
+            </View>
+            <Text style={styles.stopMeta}>
+              {`Dự kiến ${formatTimeHM(details.estimatedArrivalTime)}`}
+            </Text>
+          </View>
+        </View>
       </View>
     </SurfaceCard>
   );

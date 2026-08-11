@@ -24,7 +24,8 @@ import { useActiveTrip, useDriverSchedule } from "@/features/trips/use-trips";
 type SelectedTripContextValue = {
   tripId: string | null;
   trip: ScheduleTrip | null;
-  // Các chuyến trong ngày để dựng bộ chọn. Rỗng khi lịch chưa tải xong.
+  // Các chuyến trong cửa sổ hiển thị (hôm nay + rạng sáng mai) để dựng bộ
+  // chọn. Rỗng khi lịch chưa tải xong.
   trips: ScheduleTrip[];
   selectTrip: (tripId: string) => void;
   // Bỏ lựa chọn thủ công, quay về chuyến app tự xác định.
@@ -39,8 +40,17 @@ type SelectedTripContextValue = {
 
 const SelectedTripContext = createContext<SelectedTripContextValue | null>(null);
 
+// Ca đêm cần thấy cả chuyến rạng sáng hôm sau: chuyến 00:20 ngày 12 phải soát
+// vé từ tối muộn ngày 11 (mở bến ~30 phút trước), không thể bắt phụ xe chờ qua
+// 0h mới thấy chip. Cùng hướng tiếp cận với useActiveTrip (nhìn lui hôm qua cho
+// chuyến xuyên đêm), ở đây nhìn TỚI TRƯỚC: lấy thêm chuyến ngày mai khởi hành
+// trước ngưỡng giờ này.
+const NEXT_DAY_CUTOFF_HOUR = 1;
+
 export function SelectedTripProvider({ children }: PropsWithChildren) {
-  const today = isoDateOf(new Date());
+  const now = new Date();
+  const today = isoDateOf(now);
+  const tomorrow = isoDateOf(new Date(now.getTime() + 24 * 60 * 60 * 1000));
   const [selectedTripId, setSelectedTripId] = useState<string | null>(null);
 
   // Tách từng field ra biến riêng: useMemo phụ thuộc vào chúng chứ không vào
@@ -56,10 +66,28 @@ export function SelectedTripProvider({ children }: PropsWithChildren) {
     isLoading: scheduleLoading,
     isError: scheduleError,
     refetch: refetchSchedule,
-  } = useDriverSchedule(today, today);
+  } = useDriverSchedule(today, tomorrow);
 
   const value = useMemo<SelectedTripContextValue>(() => {
-    const todayTrips = scheduleData?.trips ?? [];
+    // Khung truy vấn là (hôm nay, ngày mai) nhưng chỉ giữ: toàn bộ chuyến hôm
+    // nay + chuyến rạng sáng mai trước NEXT_DAY_CUTOFF_HOUR. Các chuyến còn lại
+    // của ngày mai vẫn ẩn — sang ngày mới cửa sổ tự dịch theo.
+    const cutoff = new Date(
+      `${tomorrow}T0${NEXT_DAY_CUTOFF_HOUR}:00:00`,
+    ).getTime();
+    const todayTrips = (scheduleData?.trips ?? [])
+      .filter((item) => {
+        const departure = new Date(item.departureDateTime);
+        return (
+          isoDateOf(departure) === today || departure.getTime() <= cutoff
+        );
+      })
+      // Giữ sắp xếp theo giờ khởi hành để chip rạng sáng nằm cuối danh sách ca đêm.
+      .sort(
+        (a, b) =>
+          new Date(a.departureDateTime).getTime() -
+          new Date(b.departureDateTime).getTime(),
+      );
 
     // Chuyến đêm khởi hành hôm qua nhưng còn đang chạy nằm ngoài lịch hôm nay
     // → ghép thêm vào để bộ chọn vẫn hiện nó, không thì crew đang chạy chuyến
@@ -102,6 +130,8 @@ export function SelectedTripProvider({ children }: PropsWithChildren) {
     scheduleError,
     refetchSchedule,
     selectedTripId,
+    today,
+    tomorrow,
   ]);
 
   return (
