@@ -15,6 +15,8 @@ const Brand = {
   success: "#00E676",
   warning: "#FFD600",
   danger: "#FF5252",
+  // Nền đặc cho banner cảnh báo nguy hiểm nổi trên bản đồ (chữ trắng đè lên).
+  dangerSolid: "#D64545",
   info: "#35C2FF",
   onAccent: "#081211",
 } as const;
@@ -114,6 +116,8 @@ export const Colors = {
     // Override màu thương hiệu cho riêng light theme theo bảng màu Figma App User.
     primary: "#2AC1BC",
     primaryMuted: "#CFEDEB",
+    // Đỏ trầm hơn cho light để đủ tương phản với chữ trắng trên banner.
+    dangerSolid: "#C62828",
     // Nền xám trung tính rõ để card trắng + surface mint nổi hẳn, không bị
     // "trùng" với nền (tránh hiện tượng lẫn màu khi nền cũng tông mint).
     background: "#DFE5E8",

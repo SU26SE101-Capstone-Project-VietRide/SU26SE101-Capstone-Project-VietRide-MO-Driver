@@ -17,11 +17,6 @@
     "android": {
       "package": "online.vietride.driver",
       "googleServicesFile": "./google-services.json",
-      "config": {
-        "googleMaps": {
-          "apiKey": "AIzaSyAvuaqAE5ZHP4OdcB7bU_Brr0gx9f6ppmI"
-        }
-      },
       "adaptiveIcon": {
         "backgroundColor": "#2AC1BC",
         "foregroundImage": "./assets/images/android-icon-foreground.png",
@@ -70,7 +65,6 @@
         }
       ],
       "expo-notifications",
-      "expo-maps",
       [
         "expo-camera",
         {
@@ -78,7 +72,31 @@
           "recordAudioAndroid": false
         }
       ],
-      "expo-web-browser"
+      "expo-web-browser",
+      "./plugins/with-android-assets.js",
+      "@rnmapbox/maps",
+      [
+        "@badatgil/expo-mapbox-navigation",
+        {
+          "mapboxMapsVersion": "11.11.0",
+          "androidColorOverrides": {
+            "mapbox_main_maneuver_background_color": "#0F1F1B",
+            "mapbox_primary_maneuver_text_color": "#FFFFFF",
+            "mapbox_secondary_maneuver_text_color": "#9FB8B2",
+            "mapbox_step_distance_text_color": "#02C39A",
+            "mapbox_turn_icon_color": "#02C39A",
+            "mapbox_turn_icon_shadow_color": "#0F1F1B",
+            "mapbox_sub_maneuver_background_color": "#16302A",
+            "mapbox_sub_maneuver_text_color": "#DDE7E4",
+            "mapbox_upcoming_maneuver_background_color": "#16302A",
+            "mapbox_trip_progress_view_background_color": "#0F1F1B",
+            "mapbox_trip_progress_text_color": "#FFFFFF",
+            "mapbox_trip_progress_divider_color": "#2A403A",
+            "mapbox_status_view_background": "#0F1F1B",
+            "mapbox_status_view_foreground": "#FFFFFF"
+          }
+        }
+      ]
     ],
     "experiments": {
       "typedRoutes": true,

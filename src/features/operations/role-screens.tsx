@@ -2,12 +2,16 @@ import { MaterialIcons } from "@expo/vector-icons";
 import { useQueryClient } from "@tanstack/react-query";
 import * as Haptics from "expo-haptics";
 import { useRouter } from "expo-router";
-import { useEffect, useMemo, useState, type ComponentProps } from "react";
+import {
+    Fragment,
+    useEffect,
+    useMemo,
+    useState,
+    type ComponentProps,
+} from "react";
 import {
     Alert,
     Image,
-    Linking,
-    Platform,
     Pressable,
     StyleSheet,
     Text,
@@ -15,7 +19,7 @@ import {
     View,
 } from "react-native";
 
-import { ApiError } from "@/api/client";
+import { ApiError, apiErrorDisplayMessage } from "@/api/client";
 import type { ReweighParcelInput } from "@/api/parcel";
 import { sendRagFeedback, streamRagChat } from "@/api/rag";
 import {
@@ -72,6 +76,7 @@ import {
 import {
   allowedParcelActions,
   formatVnd,
+  isParcelCode,
   parcelStatusMeta,
   sizeCategoryLabel,
 } from "@/features/parcels/parcel-format";
@@ -253,19 +258,6 @@ type ChatMessage = {
   feedback?: RagRating;
 };
 
-// v1 chưa có tọa độ stop từ API → điều hướng theo tên trạm đích.
-function openDirectionsByName(destinationName: string) {
-  const encoded = encodeURIComponent(destinationName);
-  const url =
-    Platform.OS === "android"
-      ? `google.navigation:q=${encoded}`
-      : Platform.OS === "ios"
-        ? `http://maps.apple.com/?daddr=${encoded}&dirflg=d`
-        : `https://www.google.com/maps/dir/?api=1&destination=${encoded}`;
-
-  void Linking.openURL(url);
-}
-
 export function DriverOverviewScreen() {
   const router = useRouter();
   const { displayName } = useAuthenticatedSession();
@@ -348,7 +340,8 @@ export function DriverTripScreen() {
     return status === "IN_PROGRESS" || status === "BOARDING";
   }, [activeTrip.trip?.status]);
   // Chuyến đang mở soát vé (job backend tự chuyển SCHEDULED -> BOARDING
-  // ~30 phút trước giờ chạy) — điều kiện để driver bấm "Bắt đầu chuyến".
+  // 30 phút trước giờ chạy — BE xác nhận 2026-08-12) — điều kiện để driver
+  // bấm "Bắt đầu chuyến".
   const tripBoarding =
     normalizeTripStatus(activeTrip.trip?.status) === "BOARDING";
   const startTripMutation = useStartTrip(tripId);
@@ -357,7 +350,7 @@ export function DriverTripScreen() {
   const startError =
     startTripMutation.error instanceof ApiError &&
     startTripMutation.error.code === "TRIP_INVALID_TRANSITION"
-      ? "Chuyến chưa mở soát vé nên chưa thể bắt đầu. Kéo xuống làm mới rồi thử lại."
+      ? "Chuyến chưa mở soát vé nên chưa thể bắt đầu. Soát vé mở 30 phút trước giờ khởi hành — kéo xuống làm mới rồi thử lại."
       : tripOpsErrorMessage(startTripMutation.error);
   // Hoàn tất chuyến — chỉ khi đang IN_PROGRESS. TRIP_INVALID_TRANSITION của
   // complete đã có message đúng ngữ cảnh trong trip-ops-errors.
@@ -439,6 +432,9 @@ export function DriverTripScreen() {
   const delayStatus = gps.eta?.delayStatus;
   const isDelayed = delayStatus === "DELAYED" || Boolean(gps.delay);
   const delayMinutes = gps.eta?.delayMinutes ?? gps.delay?.delayMinutes ?? null;
+  // Banner lệch tuyến: BE phát trip:routeDeviation khi xe rời polyline tuyến;
+  // ROUTE_RESTORED thì hook đã tự trả null nên chỉ cần check khác null.
+  const deviation = gps.deviation;
 
   return (
     <OperationsScreen
@@ -576,12 +572,13 @@ export function DriverTripScreen() {
 
             {details.destinationStation?.name ? (
               <ActionButton
-                icon="directions"
-                label={`Chỉ đường tới ${details.destinationStation.name}`}
+                icon="navigation"
+                label={`Dẫn đường tới ${details.destinationStation.name}`}
                 tone="primary"
-                onPress={() =>
-                  openDirectionsByName(details.destinationStation.name as string)
-                }
+                // Turn-by-turn giọng nói trong app (Mapbox Navigation): lộ
+                // trình từ vị trí hiện tại → các điểm dừng chưa qua → bến
+                // đích. Màn xem toàn tuyến vẫn mở được từ card Bản đồ tuyến.
+                onPress={() => router.push("/turn-by-turn")}
               />
             ) : null}
           </SurfaceCard>
@@ -646,6 +643,13 @@ export function DriverTripScreen() {
             {stationEta ? (
               <Text style={styles.metaText}>
                 Bến cuối: {liveEtaLine(stationEta)}.
+              </Text>
+            ) : null}
+            {deviation ? (
+              <Text style={styles.delayText}>
+                {deviation.distanceMeters != null
+                  ? `Xe đang lệch lộ trình khoảng ${Math.round(deviation.distanceMeters)} m. Vui lòng quay lại tuyến.`
+                  : "Xe đang lệch lộ trình. Vui lòng quay lại tuyến."}
               </Text>
             ) : null}
             {isDelayed ? (
@@ -1085,10 +1089,8 @@ export function AssistantBoardingScreen() {
       onError: (error) => {
         setScanResult({
           kind: "empty",
-          text:
-            error instanceof ApiError
-              ? error.message
-              : "Không xác nhận được vé. Thử lại.",
+          // Map mã lỗi sang tiếng Việt — message thô backend là tiếng Anh.
+          text: tripOpsErrorMessage(error) ?? "Không xác nhận được vé. Thử lại.",
         });
       },
     });
@@ -1241,6 +1243,7 @@ export function AssistantBoardingScreen() {
                   <SectionTitle icon="event-seat" title="Sơ đồ ghế" />
                   <ApiSeatGrid
                     seats={seatMapQuery.data.seats}
+                    aisles={seatMapQuery.data.aisles}
                     seatStatusByNumber={seatStatusByNumber}
                   />
                   <View style={styles.seatLegend}>
@@ -1249,6 +1252,7 @@ export function AssistantBoardingScreen() {
                         { label: "Đã lên", style: styles.seatBoarded },
                         { label: "Chưa lên", style: styles.seatPending },
                         { label: "Trống", style: styles.seatEmpty },
+                        { label: "Lối đi", style: styles.seatAisleLegend },
                       ] as const
                     ).map((item) => (
                       <View key={item.label} style={styles.legendItem}>
@@ -1303,9 +1307,11 @@ export function AssistantBoardingScreen() {
 function ApiSeatGrid({
   seatStatusByNumber,
   seats,
+  aisles,
 }: {
   seatStatusByNumber: Map<string, "boarded" | "pending">;
   seats: SeatCell[];
+  aisles?: { afterCol: number }[] | null;
 }) {
   const styles = useThemedStyles(makeStyles);
 
@@ -1323,6 +1329,24 @@ function ApiSeatGrid({
         const cols = deckSeats.map((seat) => seat.col);
         const maxCol = Math.max(...cols);
         const minCol = Math.min(...cols);
+        const colCount = maxCol - minCol + 1;
+
+        // Cột lối đi chèn SAU col nào: ưu tiên dữ liệu BE (aisles.afterCol).
+        const aisleAfterCols = new Set(
+          (aisles ?? []).map((aisle) => aisle.afterCol),
+        );
+        // BE chưa trả aisles: nếu lưới 4 cột đặc kín ghế (bus 2+2 phổ thông,
+        // không có ô AISLE/ô khuyết nào để tự lộ lối đi) thì chèn hành lang
+        // giữa theo sơ đồ 2|2 — heuristic tạm, gỡ khi BE bổ sung aisles.
+        const isPlainSeat = (seat: SeatCell) =>
+          seat.seatNumber != null && seat.type?.toUpperCase() !== "AISLE";
+        if (
+          aisleAfterCols.size === 0 &&
+          colCount === 4 &&
+          deckSeats.filter(isPlainSeat).length === rows.length * colCount
+        ) {
+          aisleAfterCols.add(minCol + 1);
+        }
 
         return (
           <View key={`deck-${deck}`} style={styles.seatGrid}>
@@ -1331,36 +1355,53 @@ function ApiSeatGrid({
             ) : null}
             {rows.map((row) => (
               <View key={`row-${deck}-${row}`} style={styles.seatRow}>
-                {Array.from({ length: maxCol - minCol + 1 }, (_, index) => {
+                {Array.from({ length: colCount }, (_, index) => {
                   const col = minCol + index;
                   const seat = deckSeats.find(
                     (item) => item.row === row && item.col === col,
                   );
 
-                  if (!seat || !seat.seatNumber) {
-                    // Ô không có ghế = lối đi.
+                  // Hành lang chèn thêm sau cột này (từ aisles/heuristic) —
+                  // là cột ảo nằm NGOÀI dải col của ghế nên vẽ bổ sung.
+                  const walkway = aisleAfterCols.has(col) ? (
+                    <View style={styles.seatAisle}>
+                      <View style={styles.seatAisleStrip} />
+                    </View>
+                  ) : null;
+
+                  // Lối đi: BE gửi tường minh (type AISLE / seatNumber null)
+                  // hoặc ô khuyết trong lưới — đều vẽ dải hành lang cho dễ hình dung.
+                  if (
+                    !seat ||
+                    !seat.seatNumber ||
+                    seat.type?.toUpperCase() === "AISLE"
+                  ) {
                     return (
-                      <View
-                        key={`aisle-${deck}-${row}-${col}`}
-                        style={styles.seatAisle}
-                      />
+                      <Fragment key={`aisle-${deck}-${row}-${col}`}>
+                        <View style={styles.seatAisle}>
+                          <View style={styles.seatAisleStrip} />
+                        </View>
+                        {walkway}
+                      </Fragment>
                     );
                   }
 
                   const boarding = seatStatusByNumber.get(seat.seatNumber);
 
                   return (
-                    <View
-                      key={seat.seatNumber}
-                      style={[
-                        styles.seatCell,
-                        boarding == null && styles.seatEmpty,
-                        boarding === "boarded" && styles.seatBoarded,
-                        boarding === "pending" && styles.seatPending,
-                      ]}
-                    >
-                      <Text style={styles.seatLabel}>{seat.seatNumber}</Text>
-                    </View>
+                    <Fragment key={seat.seatNumber}>
+                      <View
+                        style={[
+                          styles.seatCell,
+                          boarding == null && styles.seatEmpty,
+                          boarding === "boarded" && styles.seatBoarded,
+                          boarding === "pending" && styles.seatPending,
+                        ]}
+                      >
+                        <Text style={styles.seatLabel}>{seat.seatNumber}</Text>
+                      </View>
+                      {walkway}
+                    </Fragment>
                   );
                 })}
               </View>
@@ -1385,8 +1426,20 @@ export function AssistantCargoScreen() {
   // Quét QR dán trên kiện → tra cứu nhanh kiện thuộc chuyến đang chọn.
   const scanParcel = useScanParcelQr(tripId);
   const [parcelScannerOpen, setParcelScannerOpen] = useState(false);
-  const handleParcelScanned = (code: string) => {
+  const handleParcelScanned = (raw: string) => {
     setParcelScannerOpen(false);
+    const code = raw.trim();
+    // Lọc sớm theo format chính thức (API-Parcel_NEWST.md) — đỡ một vòng API
+    // và báo đúng bệnh khi quét nhầm QR vé của khách.
+    if (!isParcelCode(code)) {
+      Alert.alert(
+        "Không phải mã kiện hàng",
+        code.startsWith("VT-")
+          ? "Đây là mã vé của hành khách. Dùng nút quét ở màn Đón khách để soát vé."
+          : "Mã vừa quét không đúng định dạng mã kiện (VR-PCL-…). Kiểm tra lại tem dán trên kiện.",
+      );
+      return;
+    }
     scanParcel.mutate(code, {
       onSuccess: (data) => {
         const meta = parcelStatusMeta(data.status);
@@ -1622,11 +1675,15 @@ function ParcelCard({
             evidenceUris,
           );
         } catch (error) {
+          // evidence-upload tự throw Error tiếng Việt; lỗi Firebase SDK /
+          // ApiError mang message tiếng Anh → thay bằng câu tiếng Việt.
           Alert.alert(
             "Không upload được ảnh",
-            error instanceof Error
-              ? error.message
-              : "Có lỗi xảy ra, thử lại sau.",
+            error instanceof ApiError || (error instanceof Error && error.name === "FirebaseError")
+              ? "Upload ảnh thất bại. Kiểm tra mạng rồi thử lại."
+              : error instanceof Error
+                ? error.message
+                : "Có lỗi xảy ra, thử lại sau.",
           );
           return;
         } finally {
@@ -2299,9 +2356,11 @@ export function CrewSupportScreen() {
         },
       });
     } catch (error) {
+      // apiErrorDisplayMessage giữ nguyên câu tiếng Việt của lỗi RAG do client
+      // dựng, mã khác thì ra câu chung kèm mã — không lộ tiếng Anh.
       const fallback =
         error instanceof ApiError
-          ? error.message
+          ? apiErrorDisplayMessage(error)
           : "Trợ lý ảo đang gián đoạn, thử lại sau.";
       appendToMessage(answerId, fallback);
     } finally {
@@ -3503,8 +3562,8 @@ const makeStyles = (c: Palette) =>
   feedbackBanner: {
     borderRadius: 20,
     borderWidth: 1,
-    borderColor: "rgba(255, 82, 82, 0.24)",
-    backgroundColor: "rgba(255, 82, 82, 0.08)",
+    borderColor: c.tones.danger.border,
+    backgroundColor: c.tones.danger.background,
     padding: Spacing.three,
     gap: Spacing.two,
   },
@@ -3585,6 +3644,20 @@ const makeStyles = (c: Palette) =>
   // Lối đi rộng bằng 1 ô ghế để mọi cột thẳng hàng (kể cả băng ghế cuối).
   seatAisle: {
     width: 48,
+    height: 42,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  // Dải hành lang: các dải nối nhau theo hàng tạo cảm giác lối đi chạy dọc xe.
+  seatAisleStrip: {
+    width: 16,
+    height: 42,
+    borderRadius: 6,
+    backgroundColor: c.tones.neutral.background,
+  },
+  seatAisleLegend: {
+    backgroundColor: c.tones.neutral.background,
+    borderColor: c.tones.neutral.border,
   },
   seatEmpty: {
     backgroundColor: "rgba(148, 163, 174, 0.06)",

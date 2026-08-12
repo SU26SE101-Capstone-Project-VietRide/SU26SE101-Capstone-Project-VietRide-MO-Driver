@@ -1,6 +1,6 @@
 import { io, type Socket } from "socket.io-client";
 
-import { API_BASE_URL } from "@/api/client";
+import { API_BASE_URL, refreshTokens } from "@/api/client";
 import type {
   BookingCreatedEvent,
   BookingUpdatedEvent,
@@ -9,6 +9,8 @@ import type {
   GpsUpdatePayload,
   ShuttleEtaUpdateEvent,
   ShuttleGpsUpdatePayload,
+  TripRouteDeviationEvent,
+  TripRouteGeometryData,
   TripStatusChangedEvent,
 } from "@/api/types";
 
@@ -16,7 +18,7 @@ import type {
 // route table; Nginx proxy thẳng tới tracking service). Auth bằng access token raw
 // (KHÔNG kèm "Bearer") theo doc.
 export function createTrackingSocket(accessToken: string): Socket {
-  return io(API_BASE_URL, {
+  const socket = io(API_BASE_URL, {
     path: "/tracking/socket.io",
     auth: { token: accessToken },
     transports: ["websocket"],
@@ -24,26 +26,89 @@ export function createTrackingSocket(accessToken: string): Socket {
     reconnectionAttempts: 5,
     autoConnect: true,
   });
+
+  // Token chỉ được verify lúc handshake (API-ETA-Tracking.md) mà TTL chỉ 900s
+  // → chuyến chạy quá 15 phút rồi rớt mạng thì reconnect chắc chắn mang token
+  // hết hạn, 5 lần thử đều UNAUTHORIZED và GPS chết lặng lẽ. Refresh đúng MỘT
+  // lần cho mỗi phiên kết nối rồi nối lại với token mới; connect thành công
+  // reset quota để lần hết hạn sau (15 phút nữa) vẫn tự cứu được.
+  let authRetried = false;
+  socket.on("connect", () => {
+    authRetried = false;
+  });
+  socket.on("connect_error", (error) => {
+    if (error?.message !== "UNAUTHORIZED" || authRetried) {
+      return;
+    }
+    authRetried = true;
+    void refreshTokens()
+      .then((data) => {
+        // socket.active = false nghĩa là đã bị disconnect() chủ động (unmount)
+        // trong lúc chờ refresh — không hồi sinh kết nối đã dọn.
+        if (data && socket.active) {
+          socket.auth = { token: data.accessToken };
+          socket.connect();
+        }
+      })
+      .catch(() => {
+        // Refresh lỗi mạng — để nhịp reconnect thường của socket tự thử tiếp.
+      });
+  });
+
+  return socket;
 }
 
 type JoinAck =
-  | { success: true; tripId: string; room: string; scope: string }
+  | {
+      success: true;
+      tripId: string;
+      room: string;
+      scope: string;
+      // Chỉ có khi join với includeRouteSnapshot: true.
+      routeContext?: TripRouteGeometryData | null;
+      routeVersion?: string;
+    }
   | { success: false; error: string; message?: string };
 
-// Join room tracking của trip. Trả scope nếu thành công, throw nếu bị từ chối.
+export type JoinTripResult = {
+  scope: string;
+  routeContext?: TripRouteGeometryData | null;
+  routeVersion?: string;
+};
+
+// Join room tracking của trip. Trả scope (+ route snapshot nếu yêu cầu),
+// throw nếu bị từ chối.
+// includeRouteSnapshot: server trả luôn routeContext + routeVersion (ETag)
+// trong ack — snapshot tại thời điểm join, dùng thay REST route-geometry để
+// map luôn mới sau reconnect/đổi tuyến (checklist API-ETA-Tracking.md).
 export async function joinTripTracking(
   socket: Socket,
   tripId: string,
-): Promise<string> {
-  const ack = (await socket
-    .timeout(5000)
-    .emitWithAck("joinTripTracking", { tripId })) as JoinAck;
+  options?: { includeRouteSnapshot?: boolean },
+): Promise<JoinTripResult> {
+  const includeRouteSnapshot = options?.includeRouteSnapshot === true;
+  const ack = (await socket.timeout(5000).emitWithAck("joinTripTracking", {
+    tripId,
+    ...(includeRouteSnapshot ? { includeRouteSnapshot: true } : {}),
+  })) as JoinAck;
 
   if (!ack?.success) {
+    // Snapshot lỗi thì server KHÔNG join room (doc) — nhưng GPS/broadcast quan
+    // trọng hơn map: thử lại một lần không kèm snapshot thay vì chịu thua.
+    if (
+      includeRouteSnapshot &&
+      ack?.error === "TRACKING_ROUTE_CONTEXT_UNAVAILABLE"
+    ) {
+      return joinTripTracking(socket, tripId);
+    }
     throw new Error(ack?.error ?? "JOIN_FAILED");
   }
 
-  return ack.scope;
+  return {
+    scope: ack.scope,
+    routeContext: ack.routeContext,
+    routeVersion: ack.routeVersion,
+  };
 }
 
 type GpsAck = { success: boolean; error?: string; message?: string };
@@ -93,6 +158,20 @@ export function onTripStatusChanged(
   socket.on("trip:statusChanged", handler);
   return () => {
     socket.off("trip:statusChanged", handler);
+  };
+}
+
+// Server broadcast khi xe lệch khỏi polyline tuyến (BE tính; app chỉ hiển thị).
+// BE ĐÃ triển khai (FE-RESPONSE-route-deviation.md 2026-08-12, branch
+// feat/route-deviation): chỉ phát vào crew room trip:crew:<tripId> — join
+// bằng joinTripTracking với scope DRIVER/ASSISTANT là BE tự thêm vào room.
+export function onRouteDeviation(
+  socket: Socket,
+  handler: (event: TripRouteDeviationEvent) => void,
+): () => void {
+  socket.on("trip:routeDeviation", handler);
+  return () => {
+    socket.off("trip:routeDeviation", handler);
   };
 }
 

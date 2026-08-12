@@ -104,14 +104,14 @@ export async function streamRagChat(params: RagChatParams): Promise<void> {
   });
 
   if (!response.ok || !response.body) {
-    let message = "Trợ lý ảo đang gián đoạn, thử lại sau.";
+    const message = "Trợ lý ảo đang gián đoạn, thử lại sau.";
     let code = "RAG_UNAVAILABLE";
     try {
       const envelope = (await response.json()) as Envelope<unknown>;
-      message = envelope.error?.message ?? message;
+      // Chỉ lấy code; message backend là tiếng Anh, giữ câu tiếng Việt mặc định.
       code = envelope.error?.code ?? code;
     } catch {
-      // Body không phải JSON — giữ message mặc định.
+      // Body không phải JSON — giữ code mặc định.
     }
     throw new ApiError({ code, message, statusCode: response.status });
   }
@@ -144,9 +144,10 @@ export async function streamRagChat(params: RagChatParams): Promise<void> {
       params.onDone?.(parseDonePayload(data));
     } else if (eventName === "error") {
       const err = parseErrorPayload(data);
+      // Bỏ err.message (tiếng Anh) — chỉ giữ code để debug qua log.
       throw new ApiError({
         code: err.code ?? "RAG_STREAM_ERROR",
-        message: err.message ?? "Trợ lý ảo gặp lỗi khi trả lời.",
+        message: "Trợ lý ảo gặp lỗi khi trả lời.",
         statusCode: 200,
       });
     }

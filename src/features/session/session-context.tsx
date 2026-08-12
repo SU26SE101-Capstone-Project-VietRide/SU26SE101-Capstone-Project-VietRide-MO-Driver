@@ -14,7 +14,9 @@ import {
     login as apiLogin,
     logout as apiLogout,
 } from "@/api/auth";
-import { ApiError, setOnSessionExpired } from "@/api/client";
+import { setOnSessionExpired } from "@/api/client";
+
+import { authErrorMessage } from "./auth-errors";
 import type { AuthUser } from "@/api/types";
 import { type CrewRole } from "@/features/operations/mock-data";
 import {
@@ -150,11 +152,9 @@ export function SessionProvider({ children }: PropsWithChildren) {
         void registerPushToken();
         return { ok: true, session: nextSession };
       } catch (error) {
-        const message =
-          error instanceof ApiError
-            ? error.message
-            : "Có lỗi xảy ra, thử lại sau.";
-        return { ok: false, error: message };
+        // authErrorMessage map mã lỗi sang tiếng Việt — message thô của
+        // backend là tiếng Anh, không hiển thị.
+        return { ok: false, error: authErrorMessage(error) };
       }
     },
     [queryClient],

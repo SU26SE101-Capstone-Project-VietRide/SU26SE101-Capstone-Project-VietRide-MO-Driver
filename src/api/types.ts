@@ -147,6 +147,10 @@ export type SeatMapData = {
   tripId: string;
   vehicleType: string | null;
   seats: SeatCell[];
+  // Lối đi dọc thân xe — cùng shape với seatLayoutJson.aisles của Vehicle.
+  // BE chưa trả trong seat-map (đã gửi FE-REQUEST-seat-map-aisle.md); khai
+  // optional để BE bổ sung là FE ăn ngay, không vỡ khi thiếu.
+  aisles?: { afterCol: number }[] | null;
 };
 
 // ===== Booking / Boarding =====
@@ -477,6 +481,9 @@ export type RouteGeometryStop = {
 // client tự nối các marker thành tuyến giả — chỉ được hiện marker.
 export type TripRouteGeometryData = {
   tripId: string;
+  // API-ETA-Tracking.md: có thể thiếu/null; cũng là shape của routeContext
+  // trong ack joinTripTracking (includeRouteSnapshot: true).
+  tripStatus?: string | null;
   geometry: { source: "ROUTE_POLYLINE"; points: GeoPoint[] } | null;
   originStation: RouteGeometryStation | null;
   intermediateStops: RouteGeometryStop[];
@@ -633,6 +640,21 @@ export type TripStatusChangedEvent = {
   stopId: string;
   status: string;
   delayMinutes: number;
+  updatedAt: string;
+};
+
+// Broadcast trip:routeDeviation — BE tính lệch tuyến server-side từ gps:update
+// (FE-RESPONSE-route-deviation.md, BE đã triển khai 2026-08-12). Ngưỡng chốt:
+// cách tuyến > 500 m liên tục > 120 giây → "DEVIATED" (kèm notification durable
+// OFF_ROUTE_ALERT, chỉ lần đầu mỗi episode); heartbeat DEVIATED mỗi >= 60 giây;
+// về lại <= 500 m → đúng một "ROUTE_RESTORED" (distanceMeters có thể 0..500,
+// KHÔNG giả định = 0). Trip terminal thì BE KHÔNG phát RESTORED — FE tự clear.
+// Khai kèm | string để không vỡ khi backend thêm giá trị mới; status lạ thì
+// bỏ qua an toàn, không hiển thị.
+export type TripRouteDeviationEvent = {
+  tripId: string;
+  status: "DEVIATED" | "ROUTE_RESTORED" | string;
+  distanceMeters?: number | null;
   updatedAt: string;
 };
 
@@ -867,7 +889,8 @@ export type ReportIncidentData = {
 
 // POST /v1/driver/trips/{tripId}/start — BOARDING -> IN_PROGRESS.
 // Backend yêu cầu chuyến phải đang BOARDING (job tự chuyển từ SCHEDULED
-// ~30 phút trước giờ chạy); chưa BOARDING trả 409 TRIP_INVALID_TRANSITION.
+// 30 phút trước giờ chạy — BE xác nhận 2026-08-12); chưa BOARDING trả
+// 409 TRIP_INVALID_TRANSITION.
 export type StartTripData = {
   tripId: string;
   status: string;

@@ -33,6 +33,28 @@ export class ApiError extends Error {
   }
 }
 
+// App hiển thị 100% tiếng Việt, mà error.message của backend là tiếng Anh →
+// KHÔNG hiển thị thô. Chỗ nào có bảng map riêng (trip-ops/shuttle/auth...) thì
+// tra bảng trước, không có thì rơi về câu chung kèm mã lỗi ở đây. Các code do
+// client tự dựng (mạng, phiên, RAG) đã viết sẵn tiếng Việt nên giữ nguyên.
+const VIETNAMESE_MESSAGE_CODES = new Set([
+  "NETWORK_ERROR",
+  "SESSION_EXPIRED",
+  "SERVER_ERROR",
+  "RAG_UNAVAILABLE",
+  "RAG_STREAM_ERROR",
+]);
+
+export function apiErrorDisplayMessage(error: unknown): string {
+  if (error instanceof ApiError) {
+    if (VIETNAMESE_MESSAGE_CODES.has(error.code)) {
+      return error.message;
+    }
+    return `Có lỗi xảy ra (mã ${error.code}). Thử lại hoặc báo điều hành.`;
+  }
+  return "Có lỗi xảy ra, thử lại sau.";
+}
+
 // SessionProvider đăng ký handler này để bị đá về màn login khi refresh fail.
 let onSessionExpired: (() => void) | null = null;
 
@@ -151,10 +173,10 @@ export type ApiRequestOptions = {
 // POST/PUT/PATCH/DELETE "bắt buộc" phải gửi Idempotency-Key là UUID v4, thiếu →
 // 422 IDEMPOTENCY_KEY_REQUIRED. Các endpoint "miễn" (login/google/refresh) gửi
 // key thừa vẫn vô hại. Tự bù key cho mọi mutation chưa có để phủ hết một chỗ,
-// không phải nhớ thêm ở từng call. Với app driver các mutation đều có state
-// machine phía backend (arrive→ARRIVED, complete→COMPLETED…) nên key-per-call
-// đủ an toàn; chưa cần helper "operation key" cho retry-cùng-thao-tác vì app
-// không có offline queue và nút submit đã disable khi request đang chạy.
+// không phải nhớ thêm ở từng call. Retry-cùng-thao-tác dùng lại đúng key
+// (yêu cầu mục 12.2 API-driver-resource-availability.md): xem apiRequest —
+// mutation rớt mạng giữa chừng được retry một lần với cùng key; mỗi lần bấm
+// nút mới vẫn là key mới (đúng doc "mỗi tap action sinh UUID v4").
 function hasIdempotencyKey(headers?: Record<string, string>): boolean {
   if (!headers) {
     return false;
@@ -187,7 +209,23 @@ export async function apiRequest<T>(
         }
       : options;
 
-  return requestInternal<T>(path, finalOptions, false);
+  try {
+    return await requestInternal<T>(path, finalOptions, false);
+  } catch (error) {
+    // Mutation rớt mạng/timeout giữa chừng: server có thể ĐÃ xử lý xong mà
+    // response không về tới nơi. Retry đúng một lần với CÙNG Idempotency-Key
+    // (doc availability §12.2): trùng thì nhận lại response đã cache, đang xử
+    // lý dở thì 409 IDEMPOTENCY_REQUEST_PENDING — không bao giờ tạo thao tác
+    // đúp. GET không retry ở đây (React Query đã tự lo).
+    if (
+      isMutation &&
+      error instanceof ApiError &&
+      error.code === "NETWORK_ERROR"
+    ) {
+      return requestInternal<T>(path, finalOptions, false);
+    }
+    throw error;
+  }
 }
 
 async function requestInternal<T>(

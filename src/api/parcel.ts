@@ -120,7 +120,9 @@ export function confirmParcelDelivery(
     `/v1/crew/parcels/${parcelId}/manual-confirm`,
     {
       method: "POST",
-      body: { note },
+      // API-Parcel_NEWST.md: body nhận cả `confirmNote` lẫn alias `note`,
+      // `confirmNote` là tên canonical (ưu tiên) — note sau trim 1..500.
+      body: { confirmNote: note.trim() },
       headers: { "Idempotency-Key": newIdempotencyKey() },
     },
   );

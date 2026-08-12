@@ -1,7 +1,7 @@
-import { ApiError } from "@/api/client";
+import { ApiError, apiErrorDisplayMessage } from "@/api/client";
 
 // Thông báo tiếng Việt cho mã lỗi của API đề xuất đổi tuyến. Mã không có trong
-// bảng thì dùng message của backend, giống nếp trip-ops-errors.ts.
+// bảng thì rơi về câu chung kèm mã lỗi, giống nếp trip-ops-errors.ts.
 const MESSAGES: Record<string, string> = {
   TRIP_NOT_EDITABLE: "Chuyến không còn ở trạng thái cho phép đổi tuyến.",
   TRIP_NOT_FOUND: "Không tìm thấy chuyến.",
@@ -30,11 +30,12 @@ export function routeProposalErrorMessage(error: unknown): string | null {
   }
 
   if (error instanceof ApiError) {
-    // Lỗi validate theo field: câu của backend cụ thể hơn câu chung của app.
+    // Field message của backend (FluentValidation) là tiếng Anh → dùng câu
+    // chung tiếng Việt, không hiển thị thô.
     if (error.code === "VALIDATION_ERROR") {
-      return error.fields?.[0]?.message ?? "Dữ liệu gửi lên không hợp lệ.";
+      return "Dữ liệu gửi lên không hợp lệ. Kiểm tra lại thông tin đề xuất.";
     }
-    return MESSAGES[error.code] ?? error.message;
+    return MESSAGES[error.code] ?? apiErrorDisplayMessage(error);
   }
 
   return "Có lỗi xảy ra, thử lại sau.";

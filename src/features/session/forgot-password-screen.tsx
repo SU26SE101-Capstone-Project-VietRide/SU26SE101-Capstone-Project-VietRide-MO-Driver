@@ -12,7 +12,7 @@ import {
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { forgotPassword, resetPassword } from "@/api/auth";
-import { ApiError } from "@/api/client";
+import { authErrorMessage } from "@/features/session/auth-errors";
 import { Fonts, Spacing, type Palette } from "@/constants/theme";
 import {
     ActionButton,
@@ -47,13 +47,10 @@ function validatePassword(password: string): string | null {
   return null;
 }
 
-// Gộp lỗi field (nếu backend trả) rồi fallback message chung.
+// Field message của backend (FluentValidation) là tiếng Anh → chỉ map theo
+// mã lỗi, không hiển thị thô.
 function messageFromError(error: unknown): string {
-  if (error instanceof ApiError) {
-    const fieldMessage = error.fields?.map((field) => field.message).join("\n");
-    return fieldMessage || error.message;
-  }
-  return "Có lỗi xảy ra, thử lại sau.";
+  return authErrorMessage(error);
 }
 
 // Màn "Quên mật khẩu": nhập email nhận OTP → nhập OTP + mật khẩu mới.
@@ -414,8 +411,8 @@ const makeStyles = (c: Palette) =>
     errorBanner: {
       borderRadius: 20,
       borderWidth: 1,
-      borderColor: "rgba(255, 82, 82, 0.24)",
-      backgroundColor: "rgba(255, 82, 82, 0.08)",
+      borderColor: c.tones.danger.border,
+      backgroundColor: c.tones.danger.background,
       padding: Spacing.three,
       gap: Spacing.two,
     },

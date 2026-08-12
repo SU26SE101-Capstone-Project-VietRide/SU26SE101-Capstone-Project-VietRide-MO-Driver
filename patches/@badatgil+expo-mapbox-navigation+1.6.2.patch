@@ -1,0 +1,311 @@
+diff --git a/node_modules/@badatgil/expo-mapbox-navigation/android/src/main/java/expo/modules/mapboxnavigation/ExpoMapboxNavigationView.kt b/node_modules/@badatgil/expo-mapbox-navigation/android/src/main/java/expo/modules/mapboxnavigation/ExpoMapboxNavigationView.kt
+index 4e667fa..41cbcda 100644
+--- a/node_modules/@badatgil/expo-mapbox-navigation/android/src/main/java/expo/modules/mapboxnavigation/ExpoMapboxNavigationView.kt
++++ b/node_modules/@badatgil/expo-mapbox-navigation/android/src/main/java/expo/modules/mapboxnavigation/ExpoMapboxNavigationView.kt
+@@ -28,6 +28,9 @@ import com.mapbox.maps.Style
+ import com.mapbox.maps.extension.localization.localizeLabels
+ import com.mapbox.maps.extension.style.layers.*
+ import com.mapbox.maps.extension.style.layers.generated.RasterLayer
++import com.mapbox.navigation.tripdata.speedlimit.api.MapboxSpeedInfoApi
++import com.mapbox.navigation.ui.components.maps.roadname.view.MapboxRoadNameView
++import com.mapbox.navigation.ui.components.speedlimit.view.MapboxSpeedInfoView
+ import com.mapbox.maps.extension.style.sources.TileSet
+ import com.mapbox.maps.extension.style.sources.addSource
+ import com.mapbox.maps.extension.style.sources.generated.RasterSource
+@@ -217,11 +220,85 @@ class ExpoMapboxNavigationView(context: Context, appContext: AppContext) :
+                     constraintLayout = parentConstraintLayout
+             )
+ 
+-    private val routeLineApiOptions = MapboxRouteLineApiOptions.Builder().build()
++    // VietRide patch: ô tốc độ hiện tại + biển giới hạn tốc độ (khi bản đồ có
++    // data) — góc trái dưới, ngay trên thanh tiến trình.
++    private val speedInfoApi = MapboxSpeedInfoApi()
++    private val speedInfoView =
++            MapboxSpeedInfoView(context).apply {
++                parentConstraintLayout.addView(
++                        this,
++                        ConstraintLayout.LayoutParams(
++                                        ConstraintLayout.LayoutParams.WRAP_CONTENT,
++                                        ConstraintLayout.LayoutParams.WRAP_CONTENT
++                                )
++                                .apply {
++                                    startToStart = ConstraintLayout.LayoutParams.PARENT_ID
++                                    bottomToTop = tripProgressViewId
++                                    marginStart = (12 * PIXEL_DENSITY).toInt()
++                                    bottomMargin = (12 * PIXEL_DENSITY).toInt()
++                                }
++                )
++            }
++
++    // VietRide patch: tên đường đang chạy — pill tối giữa dưới, ẩn khi không
++    // có tên (đường quê/hẻm chưa đặt tên).
++    private val roadNameView =
++            MapboxRoadNameView(context).apply {
++                setTextColor(Color.WHITE)
++                textSize = 14f
++                setBackgroundColor(Color.parseColor("#CC0F1F1B"))
++                setPadding(
++                        (12 * PIXEL_DENSITY).toInt(),
++                        (5 * PIXEL_DENSITY).toInt(),
++                        (12 * PIXEL_DENSITY).toInt(),
++                        (5 * PIXEL_DENSITY).toInt()
++                )
++                setVisibility(View.GONE)
++                parentConstraintLayout.addView(
++                        this,
++                        ConstraintLayout.LayoutParams(
++                                        ConstraintLayout.LayoutParams.WRAP_CONTENT,
++                                        ConstraintLayout.LayoutParams.WRAP_CONTENT
++                                )
++                                .apply {
++                                    startToStart = ConstraintLayout.LayoutParams.PARENT_ID
++                                    endToEnd = ConstraintLayout.LayoutParams.PARENT_ID
++                                    bottomToTop = tripProgressViewId
++                                    bottomMargin = (12 * PIXEL_DENSITY).toInt()
++                                }
++                )
++            }
++
++    // VietRide patch: làm mờ phần tuyến đã đi qua (vanishing route line).
++    private val routeLineApiOptions =
++            MapboxRouteLineApiOptions.Builder().vanishingRouteLineEnabled(true).build()
+     private val routeLineApi = MapboxRouteLineApi(routeLineApiOptions)
+ 
++    // VietRide patch: tuyến nằm dưới chữ tên đường. App dùng style classic
++    // (dark-v11/streets-v12, đồng bộ với màn Bản đồ tuyến) — layer chữ tên là
++    // "road-label" (style navigation-* thì là "road-label-navigation"; đặt sai
++    // tên là tuyến bị đẩy lên trên cùng đè hết chữ). Xe được move lên trên
++    // tuyến riêng — xem moveVehicleAboveRouteLine().
+     private val routeLineViewOptions =
+-            MapboxRouteLineViewOptions.Builder(context).routeLineBelowLayerId("road-label").build()
++            MapboxRouteLineViewOptions.Builder(context)
++                    .routeLineBelowLayerId("road-label")
++                    // VietRide patch: tuyến màu teal thương hiệu + casing teal
++                    // đậm (đồng bộ với màn Bản đồ tuyến) thay cho xanh dương
++                    // mặc định; các đoạn kẹt xe vẫn đổi màu theo traffic.
++                    .routeLineColorResources(
++                            com.mapbox.navigation.ui.maps.route.line.model
++                                    .RouteLineColorResources.Builder()
++                                    .routeDefaultColor(Color.parseColor("#02C39A"))
++                                    .routeCasingColor(Color.parseColor("#043D33"))
++                                    .routeLowCongestionColor(
++                                            Color.parseColor("#02C39A")
++                                    )
++                                    .routeUnknownCongestionColor(
++                                            Color.parseColor("#02C39A")
++                                    )
++                                    .build()
++                    )
++                    .build()
+     private val routeLineView = MapboxRouteLineView(routeLineViewOptions)
+ 
+     private val routeArrow = MapboxRouteArrowApi()
+@@ -330,7 +407,10 @@ class ExpoMapboxNavigationView(context: Context, appContext: AppContext) :
+                                 result.navigationRoutes,
+                                 alternativesMetadata
+                         ) { value ->
+-                            mapboxStyle?.let { routeLineView.renderRouteDrawData(it, value) }
++                            mapboxStyle?.let {
++                                routeLineView.renderRouteDrawData(it, value)
++                                moveVehicleAboveRouteLine(it)
++                            }
+                         }
+                     }
+ 
+@@ -406,7 +486,32 @@ class ExpoMapboxNavigationView(context: Context, appContext: AppContext) :
+             object : LocationObserver {
+                 override fun onNewLocationMatcherResult(
+                         locationMatcherResult: LocationMatcherResult
+-                ) {}
++                ) {
++                    // VietRide patch: cập nhật ô tốc độ + tên đường đang chạy.
++                    try {
++                        speedInfoApi
++                                .updatePostedAndCurrentSpeed(
++                                        locationMatcherResult,
++                                        DistanceFormatterOptions.Builder(context)
++                                                .locale(currentLocale)
++                                                .build()
++                                )
++                                ?.let { speedInfoView.render(it) }
++                    } catch (_: Exception) {
++                        // Thiếu data tốc độ ở điểm này — giữ giá trị cũ.
++                    }
++                    try {
++                        val road = locationMatcherResult.road
++                        if (road.components.isNotEmpty()) {
++                            roadNameView.renderRoadName(road)
++                            roadNameView.setVisibility(View.VISIBLE)
++                        } else {
++                            roadNameView.setVisibility(View.GONE)
++                        }
++                    } catch (_: Exception) {
++                        roadNameView.setVisibility(View.GONE)
++                    }
++                }
+                 override fun onNewRawLocation(rawLocation: com.mapbox.common.location.Location) {
+                     // Update puck location
+                     navigationLocationProvider.changePosition(
+@@ -450,6 +555,21 @@ class ExpoMapboxNavigationView(context: Context, appContext: AppContext) :
+         mapboxStyle?.let { routeLineView.renderRouteLineUpdate(it, result) }
+     }
+ 
++    // VietRide patch: đưa layer model xe 3D lên TRÊN CÙNG của style (như puck
++    // Google Maps — xe luôn nổi trên tuyến lẫn chữ). Gọi sau mỗi lần vẽ route
++    // vì route line tạo lại layer có thể chèn lên trên xe.
++    private fun moveVehicleAboveRouteLine(style: Style) {
++        try {
++            if (!style.styleLayerExists("mapbox-location-model-layer")) {
++                return
++            }
++            // LayerPosition null = move lên vị trí mặc định (đỉnh stack).
++            style.moveStyleLayer("mapbox-location-model-layer", null)
++        } catch (_: Exception) {
++            // Không move được (style đang đổi) — giữ nguyên, lần vẽ route sau thử lại.
++        }
++    }
++
+     private fun createMapView(id: Int, parent: ViewGroup): MapView {
+         return MapView(context).apply {
+             setId(id)
+@@ -458,18 +578,17 @@ class ExpoMapboxNavigationView(context: Context, appContext: AppContext) :
+             mapboxMap.loadStyle(Style.MAPBOX_STREETS) { style: Style -> mapboxStyle = style }
+ 
+             location.apply {
++                // VietRide patch: puck model xe 3D (glb nằm trong app assets,
++                // copy bởi plugins/with-android-assets.js) — nhìn thật hơn
++                // mũi tên 2D, tự xoay theo hướng chạy và nghiêng theo camera.
+                 locationPuck =
+-                        LocationPuck2D(
+-                                bearingImage =
+-                                        ImageHolder.from(
+-                                                com.mapbox
+-                                                        .navigation
+-                                                        .ui
+-                                                        .components
+-                                                        .R
+-                                                        .drawable
+-                                                        .mapbox_navigation_puck_icon
+-                                        ),
++                        com.mapbox.maps.plugin.LocationPuck3D(
++                                modelUri = "asset://vietride_car.glb",
++                                // Model bus Ecolin: node gốc FBX đã tự quy đổi
++                                // đơn vị (cm→m). Scale căn bằng mắt trên máy
++                                // thật: 1.5 quá nhỏ, 12 quá to → 5 vừa.
++                                modelScale = listOf(5f, 5f, 5f),
++                                modelRotation = listOf(0.0f, 0.0f, 180.0f),
+                         )
+                 setLocationProvider(navigationLocationProvider)
+                 puckBearingEnabled = true
+@@ -497,7 +616,11 @@ class ExpoMapboxNavigationView(context: Context, appContext: AppContext) :
+     }
+ 
+     private fun createCenteredTextView(): TextView {
+-        return TextView(context).apply { setGravity(Gravity.CENTER) }
++        // VietRide patch: chữ trắng trên nền tối của thanh tiến trình.
++        return TextView(context).apply {
++            setGravity(Gravity.CENTER)
++            setTextColor(Color.WHITE)
++        }
+     }
+ 
+     private fun createTripProgressView(
+@@ -511,7 +634,8 @@ class ExpoMapboxNavigationView(context: Context, appContext: AppContext) :
+             setId(id)
+             parent.addView(this)
+             setOrientation(LinearLayout.VERTICAL)
+-            setBackgroundColor(Color.WHITE)
++            // VietRide patch: nền tối khớp theme app thay vì trắng.
++            setBackgroundColor(Color.parseColor("#0F1F1B"))
+             setPadding(
+                     (5 * PIXEL_DENSITY).toInt(),
+                     (5 * PIXEL_DENSITY).toInt(),
+@@ -620,12 +744,26 @@ class ExpoMapboxNavigationView(context: Context, appContext: AppContext) :
+             connect(mapViewId, ConstraintSet.END, ConstraintSet.PARENT_ID, ConstraintSet.END)
+ 
+             // Add ManeuverView constraints
++            // VietRide patch: cộng chiều cao status bar để banner chỉ dẫn
++            // không dính dưới đồng hồ/pin (view native không tự biết safe area).
++            val statusBarResId =
++                    constraintLayout.context.resources.getIdentifier(
++                            "status_bar_height",
++                            "dimen",
++                            "android"
++                    )
++            val statusBarHeight =
++                    if (statusBarResId > 0)
++                            constraintLayout.context.resources.getDimensionPixelSize(
++                                    statusBarResId
++                            )
++                    else 0
+             connect(
+                     maneuverViewId,
+                     ConstraintSet.TOP,
+                     mapViewId,
+                     ConstraintSet.TOP,
+-                    (4 * PIXEL_DENSITY).toInt()
++                    (4 * PIXEL_DENSITY).toInt() + statusBarHeight
+             )
+             connect(
+                     maneuverViewId,
+@@ -1009,11 +1147,13 @@ class ExpoMapboxNavigationView(context: Context, appContext: AppContext) :
+                 mapboxStyle = style
+                 style.localizeLabels(currentLocale)
+                 addCustomRasterLayer()
++                moveVehicleAboveRouteLine(style)
+             }
+         } else {
+             mapboxMap.getStyle { style: Style ->
+                 style.localizeLabels(currentLocale)
+                 addCustomRasterLayer()
++                moveVehicleAboveRouteLine(style)
+             }
+         }
+ 
+diff --git a/node_modules/@badatgil/expo-mapbox-navigation/android/src/main/res/drawable/vietride_bus_puck.xml b/node_modules/@badatgil/expo-mapbox-navigation/android/src/main/res/drawable/vietride_bus_puck.xml
+new file mode 100644
+index 0000000..58d191d
+--- /dev/null
++++ b/node_modules/@badatgil/expo-mapbox-navigation/android/src/main/res/drawable/vietride_bus_puck.xml
+@@ -0,0 +1,41 @@
++<?xml version="1.0" encoding="utf-8"?>
++<!-- VietRide patch: puck hình xe bus nhìn từ trên xuống, mũi xe hướng lên
++     (bearingImage xoay theo hướng di chuyển). Thân teal thương hiệu, viền
++     trắng nổi trên nền bản đồ tối, kính chắn gió tối ở đầu xe. -->
++<vector xmlns:android="http://schemas.android.com/apk/res/android"
++    android:width="34dp"
++    android:height="52dp"
++    android:viewportWidth="34"
++    android:viewportHeight="52">
++
++    <!-- Bóng đổ nhẹ -->
++    <path
++        android:fillColor="#33000000"
++        android:pathData="M17,3 C25,3 30,7 30,14 L30,44 C30,48 26,51 17,51 C8,51 4,48 4,44 L4,14 C4,7 9,3 17,3 Z" />
++
++    <!-- Viền trắng -->
++    <path
++        android:fillColor="#FFFFFF"
++        android:pathData="M17,1 C25,1 30,5 30,12 L30,42 C30,47 26,50 17,50 C8,50 4,47 4,42 L4,12 C4,5 9,1 17,1 Z" />
++
++    <!-- Thân xe teal -->
++    <path
++        android:fillColor="#02C39A"
++        android:pathData="M17,3.5 C24,3.5 27.5,7 27.5,12.5 L27.5,41.5 C27.5,45.5 24,47.5 17,47.5 C10,47.5 6.5,45.5 6.5,41.5 L6.5,12.5 C6.5,7 10,3.5 17,3.5 Z" />
++
++    <!-- Kính chắn gió (đầu xe, hướng đi) -->
++    <path
++        android:fillColor="#0F1F1B"
++        android:pathData="M17,6.5 C22,6.5 25,8.5 25,12 L25,15 C25,16 24.2,16.6 23.2,16.4 C21.4,16 19.3,15.8 17,15.8 C14.7,15.8 12.6,16 10.8,16.4 C9.8,16.6 9,16 9,15 L9,12 C9,8.5 12,6.5 17,6.5 Z" />
++
++    <!-- Kính sau -->
++    <path
++        android:fillColor="#0F1F1B"
++        android:pathData="M10,42.5 L24,42.5 C24.8,42.5 25.2,43.3 24.6,43.9 C23.2,45.2 20.5,45.8 17,45.8 C13.5,45.8 10.8,45.2 9.4,43.9 C8.8,43.3 9.2,42.5 10,42.5 Z" />
++
++    <!-- Vạch nóc xe -->
++    <path
++        android:fillColor="#FFFFFF"
++        android:fillAlpha="0.35"
++        android:pathData="M11,20 L23,20 C23.55,20 24,20.45 24,21 L24,38 C24,38.55 23.55,39 23,39 L11,39 C10.45,39 10,38.55 10,38 L10,21 C10,20.45 10.45,20 11,20 Z" />
++</vector>

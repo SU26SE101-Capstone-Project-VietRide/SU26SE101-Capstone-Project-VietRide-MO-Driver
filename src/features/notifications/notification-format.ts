@@ -80,7 +80,8 @@ const NOTIFICATION_TYPE_LABELS: Record<string, string> = {
 };
 
 // Nhãn hiển thị + tiêu chí lọc. Type có trong bảng thì dùng nhãn tiếng Việt;
-// type mới/lạ thì đoán nhóm theo từ khóa, bí quá mới rơi về type thô.
+// type mới/lạ thì đoán nhóm theo từ khóa, bí quá gom vào "Khác" — không hiển
+// thị type thô tiếng Anh (app 100% tiếng Việt).
 export function notificationBadgeOf(type: string): string {
   const known = NOTIFICATION_TYPE_LABELS[type.toUpperCase()];
   if (known) {
@@ -101,7 +102,10 @@ export function notificationBadgeOf(type: string): string {
     return "Chuyến đi";
   }
 
-  return type.replace(/[_-]+/g, " ").trim() || "Khác";
+  if (normalized.includes("invoice") || normalized.includes("payment")) {
+    return "Thanh toán";
+  }
+  return "Khác";
 }
 
 export function formatRelativeTime(iso: string, now: number): string {

@@ -14,6 +14,7 @@ import type {
   ShuttleEtaUpdateEvent,
   ShuttleGpsUpdatePayload,
   TripEtaData,
+  TripRouteDeviationEvent,
   TripStatusChangedEvent,
 } from "@/api/types";
 
@@ -24,12 +25,14 @@ import {
 } from "./fake-gps-route";
 import {
   createTrackingSocket,
+  type JoinTripResult,
   joinShuttleTracking,
   joinTripTracking,
   onBookingCreated,
   onBookingUpdated,
   onEtaBatchUpdate,
   onEtaUpdate,
+  onRouteDeviation,
   onShuttleEtaUpdate,
   onTripStatusChanged,
   sendGpsUpdate,
@@ -54,6 +57,11 @@ const GPS_DISTANCE_INTERVAL_M = 15;
 // 2026-07-10). Bật bằng EXPO_PUBLIC_TRACKING_ENABLED=true khi BE sẵn sàng.
 export const TRACKING_ENABLED =
   process.env.EXPO_PUBLIC_TRACKING_ENABLED === "true";
+
+// Lưới an toàn banner lệch tuyến: khi còn lệch BE phát heartbeat DEVIATED mỗi
+// >= 60 giây; 5 phút không có event mới (mất mạng/lỡ ROUTE_RESTORED) thì tự ẩn.
+// Dùng chung với use-route-deviation.ts.
+export const DEVIATION_AUTO_CLEAR_MS = 5 * 60_000;
 
 // Đích phát GPS: chuyến chính hoặc shuttle. Hai contract khác event + tên field
 // (tripId/headingDeg vs shuttleTripId/heading) nên phân nhánh theo kind.
@@ -120,6 +128,10 @@ export function useGpsBroadcast(
   const [status, setStatus] = useState<GpsBroadcastStatus>("idle");
   // Sự kiện trip:statusChanged gần nhất (chỉ phát khi chuyến bị đánh dấu trễ).
   const [delay, setDelay] = useState<TripStatusChangedEvent | null>(null);
+  // Cảnh báo lệch tuyến gần nhất (trip:routeDeviation, BE tính server-side).
+  const [deviation, setDeviation] = useState<TripRouteDeviationEvent | null>(
+    null,
+  );
   // ETA gần nhất server đẩy về. Giữ riêng vì server tự chọn stop kế tiếp theo
   // guard của nó (bỏ stop ARRIVED/SKIPPED, không lùi sequence, bỏ stop cách
   // dưới 50 m) — không chắc trùng stop mà app đoán từ danh sách điểm dừng.
@@ -294,6 +306,23 @@ export function useGpsBroadcast(
         );
 
         unsubscribers.push(
+          onRouteDeviation(socket, (event) => {
+            if (event?.tripId !== id || cancelled) {
+              return;
+            }
+            // ROUTE_RESTORED = đã về lại tuyến → tắt cảnh báo (giống DELAY_CLEARED).
+            if (event.status === "ROUTE_RESTORED") {
+              setDeviation(null);
+            } else if (event.status === "DEVIATED") {
+              // Heartbeat cũng đi vào đây — object mới nên effect fail-safe
+              // bên dưới được refresh theo từng heartbeat.
+              setDeviation(event);
+            }
+            // Status lạ trong tương lai: bỏ qua an toàn (khuyến nghị của BE).
+          }),
+        );
+
+        unsubscribers.push(
           onBookingCreated(socket, (event) => {
             if (event?.tripId !== id || cancelled) {
               return;
@@ -375,15 +404,39 @@ export function useGpsBroadcast(
           timerRef.current = null;
         }
 
-        // Join room rồi mới bắt đầu watch vị trí.
+        // Join room rồi mới bắt đầu watch vị trí. Nhánh trip xin luôn route
+        // snapshot trong ack — reconnect/đổi tuyến là map có bản mới nhất
+        // không cần chờ REST route-geometry hết staleTime.
         const join =
           kind === "trip"
-            ? joinTripTracking(socket, id)
-            : joinShuttleTracking(socket, id);
+            ? joinTripTracking(socket, id, { includeRouteSnapshot: true })
+            : joinShuttleTracking(socket, id).then((scope) => ({ scope }));
 
         join
-          .then(async () => {
+          .then(async (result: { scope: string } & Partial<JoinTripResult>) => {
             if (cancelled) {
+              return;
+            }
+
+            // Snapshot tuyến từ ack → thay nguyên bản trong cache (atomic
+            // replace theo checklist API-ETA-Tracking.md); useTripRouteGeometry
+            // ở các màn map đọc cùng key nên tự render bản mới.
+            if (kind === "trip" && result.routeContext) {
+              queryClient.setQueryData(
+                ["trip-route-geometry", id],
+                result.routeContext,
+              );
+            }
+
+            // Doc flow Mobile Driver: chỉ phát GPS khi scope là crew. Scope
+            // khác (BOOKING_OWNER/OPERATOR...) vẫn join được room để nghe,
+            // nhưng gps:update sẽ bị ACCESS_DENIED — chặn sớm cho rõ trạng thái.
+            const canBroadcast =
+              kind === "trip"
+                ? result.scope === "DRIVER" || result.scope === "ASSISTANT"
+                : result.scope === "DRIVER";
+            if (!canBroadcast) {
+              setStatus("error");
               return;
             }
 
@@ -484,10 +537,27 @@ export function useGpsBroadcast(
     };
   }, [target?.kind, target?.id, enabled, cleanup, queryClient]);
 
+  // Lưới an toàn 5 phút kể từ event lệch tuyến gần nhất (heartbeat tạo object
+  // mới nên timer tự refresh theo từng nhịp).
+  useEffect(() => {
+    if (!deviation) {
+      return;
+    }
+    const timer = setTimeout(() => setDeviation(null), DEVIATION_AUTO_CLEAR_MS);
+    return () => clearTimeout(timer);
+  }, [deviation]);
+
   // Lọc theo id hiện tại thay vì reset state khi đổi chuyến — tránh setState
   // trong thân effect, và cảnh báo của chuyến cũ tự hết hiệu lực.
   const currentDelay =
     target?.kind === "trip" && delay?.tripId === target.id ? delay : null;
+  // Thêm điều kiện enabled: chuyến chuyển terminal (COMPLETED/CANCELLED/
+  // DISRUPTED) thì màn tắt GPS (enabled=false) và banner phải tắt theo —
+  // BE cố ý KHÔNG phát ROUTE_RESTORED khi trip terminal (FE-RESPONSE mục 6).
+  const currentDeviation =
+    enabled && target?.kind === "trip" && deviation?.tripId === target.id
+      ? deviation
+      : null;
   const currentEta =
     target?.kind === "trip" && lastEta?.tripId === target.id ? lastEta : null;
   const currentEtaBatch =
@@ -508,6 +578,7 @@ export function useGpsBroadcast(
   return {
     status,
     delay: currentDelay,
+    deviation: currentDeviation,
     eta: currentEta,
     etaBatch: currentEtaBatch,
     shuttleEta: currentShuttleEta,

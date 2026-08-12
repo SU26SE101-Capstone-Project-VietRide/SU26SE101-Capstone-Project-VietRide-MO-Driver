@@ -1,5 +1,15 @@
 import type { Tone } from "@/features/operations/mock-data";
 
+// Format mã kiện chính thức (API-Parcel_NEWST.md): bản mới VR-PCL-yyyymmdd-8
+// ký tự (bỏ I,O,0,1 tránh nhầm mắt) hoặc bản legacy VRP-. Dùng để lọc sớm
+// chuỗi quét từ QR — mã vé (VT-...) hay chuỗi lạ thì khỏi gọi API.
+const PARCEL_CODE_PATTERN =
+  /^(VR-PCL-\d{8}-[A-HJ-NP-Z2-9]{8}|VRP-\d{8}-[A-Z0-9]{8})$/;
+
+export function isParcelCode(code: string): boolean {
+  return PARCEL_CODE_PATTERN.test(code.trim());
+}
+
 // Backend trả status parcel dạng string (22 giá trị, Settlement v2) → map
 // defensive, có fallback.
 export function parcelStatusMeta(status: string | null | undefined): {

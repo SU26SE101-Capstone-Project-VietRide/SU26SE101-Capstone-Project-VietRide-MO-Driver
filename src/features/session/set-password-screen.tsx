@@ -12,7 +12,7 @@ import {
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { setInitialPassword } from "@/api/auth";
-import { ApiError } from "@/api/client";
+import { authErrorMessage } from "@/features/session/auth-errors";
 import { Fonts, Spacing, type Palette } from "@/constants/theme";
 import {
     ActionButton,
@@ -65,15 +65,9 @@ export function SetPasswordScreen() {
       await setInitialPassword(token, password);
       setSucceeded(true);
     } catch (error) {
-      if (error instanceof ApiError) {
-        // Ưu tiên lỗi theo field (nếu backend trả), fallback message chung.
-        const fieldMessage = error.fields
-          ?.map((field) => field.message)
-          .join("\n");
-        setErrorMessage(fieldMessage || error.message);
-      } else {
-        setErrorMessage("Có lỗi xảy ra, thử lại sau.");
-      }
+      // Field message của backend là tiếng Anh → map theo mã lỗi, không
+      // hiển thị thô.
+      setErrorMessage(authErrorMessage(error));
     } finally {
       setSubmitting(false);
     }
@@ -310,8 +304,8 @@ const makeStyles = (c: Palette) =>
     errorBanner: {
       borderRadius: 20,
       borderWidth: 1,
-      borderColor: "rgba(255, 82, 82, 0.24)",
-      backgroundColor: "rgba(255, 82, 82, 0.08)",
+      borderColor: c.tones.danger.border,
+      backgroundColor: c.tones.danger.background,
       padding: Spacing.three,
       gap: Spacing.two,
     },
