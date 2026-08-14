@@ -16,6 +16,21 @@ const MESSAGES: Record<string, string> = {
   IDEMPOTENCY_KEY_MISMATCH:
     "Nội dung đề xuất đã thay đổi so với lần gửi trước, gửi lại giúp em.",
   UPSTREAM_UNAVAILABLE: "Máy chủ đang bận, thử lại sau ít phút.",
+  // Vòng đời đề xuất (API-driver-route-change-proposals.md): đề xuất bị điều
+  // hành xử lý/đổi tuyến trước khi crew bấm → phải tải lại danh sách.
+  ROUTE_CHANGE_PROPOSAL_NOT_FOUND:
+    "Đề xuất này không còn nữa. Tải lại danh sách giúp em.",
+  ROUTE_CHANGE_PROPOSAL_NOT_PENDING:
+    "Đề xuất này đã được điều hành xử lý rồi. Tải lại để xem kết quả.",
+  ROUTE_CHANGE_PROPOSAL_STALE:
+    "Chuyến vừa được đổi tuyến ở nơi khác. Tải lại rồi gửi đề xuất mới.",
+  TRIP_NO_LONGER_EDITABLE:
+    "Chuyến không còn ở trạng thái cho phép đổi tuyến nữa.",
+  ROUTE_OWNERSHIP_UNVERIFIABLE:
+    "Chưa xác minh được tuyến thay thế thuộc nhà xe. Thử lại sau ít phút.",
+  TRIP_ROUTE_CHANGE_BOOKINGS_EXIST:
+    "Chuyến đã có khách đặt vé theo tuyến cũ nên không đổi tuyến được. Liên hệ điều hành.",
+  RATE_LIMITED: "Gửi đề xuất quá nhanh. Đợi một lúc rồi thử lại.",
   // Các mã geometry chỉ phát sinh với đề xuất tuyến tự vẽ (chưa làm), nhưng vẫn
   // map sẵn để không lọt chuỗi tiếng Anh nếu backend đổi hành vi.
   ROUTE_GEOMETRY_TOO_LARGE: "Dữ liệu đường đi quá lớn.",

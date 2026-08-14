@@ -33,6 +33,12 @@ const MESSAGES: Record<string, string> = {
     "Xe vẫn đang thuộc một chuyến khác chưa hoàn tất hoặc trùng lịch. Liên hệ điều hành, đừng bấm lại.",
   RESOURCE_TRAVEL_TIME_UNAVAILABLE:
     "Hệ thống chưa tính được lịch di chuyển của xe. Thử lại sau ít phút.",
+  // Điểm đón bị điều hành khoá lại giữa chừng (API-Shuttle.md) — không tự retry.
+  SHUTTLE_PICKUP_LOCKED:
+    "Điểm đón này đang bị điều hành khoá. Liên hệ điều hành để xử lý.",
+  TRIP_NOT_FOUND: "Không tìm thấy chuyến chính gắn với chuyến trung chuyển.",
+  DRIVER_NOT_FOUND: "Không tìm thấy tài xế của chuyến trung chuyển.",
+  VEHICLE_NOT_FOUND: "Không tìm thấy xe của chuyến trung chuyển.",
   IDEMPOTENCY_KEY_REQUIRED: "Thiếu khóa idempotency. Thử lại thao tác.",
   IDEMPOTENCY_REQUEST_PENDING: "Yêu cầu trước đang được xử lý, đợi một chút.",
 };

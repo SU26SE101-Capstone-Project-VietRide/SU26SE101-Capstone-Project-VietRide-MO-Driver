@@ -12,6 +12,21 @@ const MESSAGES: Record<string, string> = {
   // Backend thực tế trả mã này khi complete chuyến chưa IN_PROGRESS (kiểm chứng
   // trên production 2026-07-21); tài liệu Invoice chỉ ghi TRIP_ALREADY_TERMINAL.
   TRIP_INVALID_TRANSITION: "Chuyến chưa khởi hành nên chưa thể hoàn tất.",
+  // ===== Check-in vé của phụ xe (POST .../boarding/qr-scan + .../passenger/{id})
+  // Mã kiểm chứng trực tiếp trên production 2026-08-15: quét mã vé có thật
+  // nhưng thuộc chuyến khác → 422 BOOKING_NOT_FOR_THIS_TRIP; mã không tồn tại
+  // (hoặc passengerRecordId sai) → 404 BOOKING_NOT_FOUND.
+  BOOKING_NOT_FOR_THIS_TRIP:
+    "Vé này không thuộc chuyến đang chọn. Kiểm tra lại ca ở bộ chọn chuyến phía trên rồi quét lại.",
+  BOOKING_NOT_FOUND:
+    "Không tìm thấy vé với mã này. Kiểm tra lại mã hoặc quét lại QR trên vé của khách.",
+  BOOKING_CANCELLED: "Vé này đã bị hủy nên không check-in được.",
+  // Backend trả 409 khi hành khách đã được xác nhận lên xe (api-reference
+  // §3 ghi "409 Conflict nếu đã boarded" nhưng không nêu tên mã) → map sẵn các
+  // biến thể tên để không lọt câu tiếng Anh dù backend chọn tên nào.
+  ALREADY_BOARDED: "Khách của vé này đã được xác nhận lên xe rồi.",
+  PASSENGER_ALREADY_BOARDED: "Khách của vé này đã được xác nhận lên xe rồi.",
+  BOOKING_ALREADY_BOARDED: "Khách của vé này đã được xác nhận lên xe rồi.",
   DROP_OFF_STOP_NOT_ARRIVED:
     "Chưa tới điểm trả của kiện này. Xác nhận đã đến điểm dừng trước đã.",
   DESTINATION_TERMINAL_NOT_ARRIVED:
@@ -44,6 +59,20 @@ const MESSAGES: Record<string, string> = {
     "Người nhận đã từ chối kiện này, không gửi lại email xác nhận được nữa.",
   DROP_OFF_STOP_NOT_FOUND: "Không tìm thấy điểm trả của kiện trong chuyến.",
   DROP_OFF_STOP_NOT_ALLOWED: "Điểm dừng này không cho phép trả kiện.",
+  // Còn lại của Parcel service (API-Parcel.md §Errors, API-Parcel_NEWST.md) mà
+  // crew có thể chạm tới khi nhận/xếp/giao kiện.
+  PARCEL_CARGO_NOT_FOUND: "Không tìm thấy khoang hàng của chuyến cho kiện này.",
+  PARCEL_FINAL_PAYMENT_REQUIRED:
+    "Khách chưa thanh toán phần còn thiếu sau khi cân lại, chưa xếp kiện lên xe được.",
+  PARCEL_NOT_DELIVERY_REJECTED:
+    "Kiện không ở trạng thái bị từ chối giao nên không thao tác được.",
+  PARCEL_CODE_COLLISION: "Mã kiện bị trùng, tải lại danh sách rồi thử lại.",
+  TRIP_NOT_ACCEPTING_PARCEL: "Chuyến này không còn nhận kiện nữa.",
+  INVALID_TRANSFER_TARGET: "Chuyến nhận kiện chuyển không hợp lệ.",
+  INVALID_PENDING_ACTION: "Thao tác này không còn hợp lệ với kiện đang chờ xử lý.",
+  INVALID_SIZE_CATEGORY: "Kích thước kiện không hợp lệ. Đo và nhập lại giúp em.",
+  INVALID_DELIVERY_METHOD: "Hình thức giao kiện không hợp lệ.",
+  INVALID_TRANSITION: "Trạng thái đã thay đổi. Tải lại rồi thao tác tiếp.",
   // Backend trả code này khi ảnh bằng chứng không thuộc đúng vị trí lưu trữ
   // của người upload (Firebase prefix parcel-ops/...).
   VALIDATION_FAILED:

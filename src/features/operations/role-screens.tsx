@@ -10,6 +10,7 @@ import {
     type ComponentProps,
 } from "react";
 import {
+    ActivityIndicator,
     Alert,
     Image,
     Pressable,
@@ -18,8 +19,17 @@ import {
     TextInput,
     View,
 } from "react-native";
+import Animated, {
+    Easing,
+    useAnimatedStyle,
+    useSharedValue,
+    withDelay,
+    withRepeat,
+    withSequence,
+    withTiming,
+} from "react-native-reanimated";
 
-import { ApiError, apiErrorDisplayMessage } from "@/api/client";
+import { ApiError } from "@/api/client";
 import type { ReweighParcelInput } from "@/api/parcel";
 import { sendRagFeedback, streamRagChat } from "@/api/rag";
 import {
@@ -48,6 +58,7 @@ import {
     type Tone,
 } from "@/features/operations/mock-data";
 import { SUPPORT_QUICK_PROMPTS } from "@/features/operations/operations-context";
+import { ragErrorMessage } from "@/features/operations/rag-errors";
 import { useUnreadNotificationsCount } from "@/features/notifications/use-notifications";
 import {
     WEEKDAY_FULL,
@@ -2288,6 +2299,222 @@ export function AssistantStopsScreen() {
   );
 }
 
+// ---------------------------------------------------------------------------
+// Hiển thị câu trả lời của trợ lý (RAG)
+// Backend trả markdown thô (**đậm**, `*` đầu dòng, ### tiêu đề). RN không render
+// markdown nên trước đây user thấy nguyên ký tự sao. Parser nhẹ dưới đây đủ cho
+// định dạng RAG hay dùng, không thêm dependency và chịu được text đang stream
+// (cú pháp chưa đóng thì để nguyên văn).
+// ---------------------------------------------------------------------------
+
+type InlineToken = {
+  text: string;
+  bold?: boolean;
+  italic?: boolean;
+  code?: boolean;
+};
+
+type MarkdownBlock =
+  | { kind: "heading"; text: string }
+  | { kind: "bullet"; marker: string; text: string }
+  | { kind: "paragraph"; text: string };
+
+const INLINE_PATTERN = /(\*\*[^*]+\*\*|__[^_]+__|`[^`]+`|\*[^*\n]+\*)/g;
+const HEADING_PATTERN = /^\s{0,3}#{1,6}\s+(.*)$/;
+const BULLET_PATTERN = /^\s*[-*•]\s+(.*)$/;
+const ORDERED_PATTERN = /^\s*(\d{1,2})[.)]\s+(.*)$/;
+
+function parseInline(raw: string): InlineToken[] {
+  const tokens: InlineToken[] = [];
+  let cursor = 0;
+
+  for (const match of raw.matchAll(INLINE_PATTERN)) {
+    const start = match.index ?? 0;
+    if (start > cursor) {
+      tokens.push({ text: raw.slice(cursor, start) });
+    }
+
+    const chunk = match[0];
+    if (chunk.startsWith("**") || chunk.startsWith("__")) {
+      tokens.push({ text: chunk.slice(2, -2), bold: true });
+    } else if (chunk.startsWith("`")) {
+      tokens.push({ text: chunk.slice(1, -1), code: true });
+    } else {
+      tokens.push({ text: chunk.slice(1, -1), italic: true });
+    }
+    cursor = start + chunk.length;
+  }
+
+  if (cursor < raw.length) {
+    tokens.push({ text: raw.slice(cursor) });
+  }
+
+  return tokens.length > 0 ? tokens : [{ text: raw }];
+}
+
+function parseMarkdownBlocks(raw: string): MarkdownBlock[] {
+  const blocks: MarkdownBlock[] = [];
+  // Dòng trống ngắt block; dòng thường nối tiếp block trước (text bị wrap).
+  let canContinue = false;
+
+  for (const line of raw.split("\n")) {
+    if (line.trim().length === 0) {
+      canContinue = false;
+      continue;
+    }
+
+    const heading = HEADING_PATTERN.exec(line);
+    if (heading) {
+      blocks.push({ kind: "heading", text: heading[1].trim() });
+      canContinue = false;
+      continue;
+    }
+
+    const ordered = ORDERED_PATTERN.exec(line);
+    if (ordered) {
+      blocks.push({
+        kind: "bullet",
+        marker: `${ordered[1]}.`,
+        text: ordered[2].trim(),
+      });
+      canContinue = true;
+      continue;
+    }
+
+    const bullet = BULLET_PATTERN.exec(line);
+    if (bullet) {
+      blocks.push({ kind: "bullet", marker: "•", text: bullet[1].trim() });
+      canContinue = true;
+      continue;
+    }
+
+    const previous = blocks[blocks.length - 1];
+    if (canContinue && previous && previous.kind !== "heading") {
+      previous.text = `${previous.text} ${line.trim()}`;
+      continue;
+    }
+
+    blocks.push({ kind: "paragraph", text: line.trim() });
+    canContinue = true;
+  }
+
+  return blocks;
+}
+
+function InlineMarkdown({
+  text,
+  style,
+}: {
+  text: string;
+  style: ComponentProps<typeof Text>["style"];
+}) {
+  const styles = useThemedStyles(makeStyles);
+  const tokens = useMemo(() => parseInline(text), [text]);
+
+  return (
+    <Text style={style}>
+      {tokens.map((token, index) => (
+        <Text
+          key={`${index}-${token.text}`}
+          style={[
+            token.bold ? styles.markdownBold : null,
+            token.italic ? styles.markdownItalic : null,
+            token.code ? styles.markdownCode : null,
+          ]}
+        >
+          {token.text}
+        </Text>
+      ))}
+    </Text>
+  );
+}
+
+function MarkdownText({ text }: { text: string }) {
+  const styles = useThemedStyles(makeStyles);
+  const blocks = useMemo(() => parseMarkdownBlocks(text), [text]);
+
+  if (blocks.length === 0) {
+    return null;
+  }
+
+  return (
+    <View style={styles.markdownStack}>
+      {blocks.map((block, index) => {
+        if (block.kind === "heading") {
+          return (
+            <InlineMarkdown
+              key={`h-${index}`}
+              text={block.text}
+              style={styles.markdownHeading}
+            />
+          );
+        }
+
+        if (block.kind === "bullet") {
+          return (
+            <View key={`b-${index}`} style={styles.markdownBulletRow}>
+              <Text style={styles.markdownBulletMarker}>{block.marker}</Text>
+              <InlineMarkdown
+                text={block.text}
+                style={styles.markdownBulletText}
+              />
+            </View>
+          );
+        }
+
+        return (
+          <InlineMarkdown
+            key={`p-${index}`}
+            text={block.text}
+            style={styles.messageText}
+          />
+        );
+      })}
+    </View>
+  );
+}
+
+// Một chấm nhấp nháy của indicator "đang soạn"; delay lệch nhau tạo hiệu ứng sóng.
+function TypingDot({ delay }: { delay: number }) {
+  const styles = useThemedStyles(makeStyles);
+  const progress = useSharedValue(0);
+
+  useEffect(() => {
+    progress.value = withDelay(
+      delay,
+      withRepeat(
+        withSequence(
+          withTiming(1, { duration: 360, easing: Easing.out(Easing.quad) }),
+          withTiming(0, { duration: 360, easing: Easing.in(Easing.quad) }),
+        ),
+        -1,
+        false,
+      ),
+    );
+  }, [delay, progress]);
+
+  const animatedStyle = useAnimatedStyle(() => ({
+    opacity: 0.32 + progress.value * 0.68,
+    transform: [{ translateY: -3 * progress.value }],
+  }));
+
+  return <Animated.View style={[styles.typingDot, animatedStyle]} />;
+}
+
+// Placeholder khi RAG đang stream nhưng chưa có token nào.
+function TypingIndicator() {
+  const styles = useThemedStyles(makeStyles);
+
+  return (
+    <View style={styles.typingRow}>
+      <TypingDot delay={0} />
+      <TypingDot delay={140} />
+      <TypingDot delay={280} />
+      <Text style={styles.typingLabel}>Đang soạn câu trả lời…</Text>
+    </View>
+  );
+}
+
 export function CrewSupportScreen() {
   const styles = useThemedStyles(makeStyles);
   const theme = useTheme();
@@ -2356,13 +2583,9 @@ export function CrewSupportScreen() {
         },
       });
     } catch (error) {
-      // apiErrorDisplayMessage giữ nguyên câu tiếng Việt của lỗi RAG do client
-      // dựng, mã khác thì ra câu chung kèm mã — không lộ tiếng Anh.
-      const fallback =
-        error instanceof ApiError
-          ? apiErrorDisplayMessage(error)
-          : "Trợ lý ảo đang gián đoạn, thử lại sau.";
-      appendToMessage(answerId, fallback);
+      // ragErrorMessage diễn giải mã RAG_* thành lý do cụ thể (quá tải, câu hỏi
+      // quá dài…); mã lạ rơi về câu chung tiếng Việt — không lộ tiếng Anh.
+      appendToMessage(answerId, ragErrorMessage(error));
     } finally {
       setStreaming(false);
       // Nếu stream kết thúc mà không có token nào → báo không có trả lời.
@@ -2458,7 +2681,16 @@ export function CrewSupportScreen() {
                   {message.speaker === "assistant" ? "Trợ lý" : "Bạn"}
                 </Text>
               </View>
-              <Text style={styles.messageText}>{message.text}</Text>
+              {message.speaker === "assistant" ? (
+                message.text.length === 0 ? (
+                  // Chưa có token nào → hiện indicator thay cho bong bóng rỗng.
+                  <TypingIndicator />
+                ) : (
+                  <MarkdownText text={message.text} />
+                )
+              ) : (
+                <Text style={styles.messageText}>{message.text}</Text>
+              )}
               {message.speaker === "assistant" && message.assistantMessageId ? (
                 <View style={styles.feedbackRow}>
                   <Pressable
@@ -2547,7 +2779,11 @@ export function CrewSupportScreen() {
               },
             ]}
           >
-            <MaterialIcons name="send" size={20} color={theme.onAccent} />
+            {streaming ? (
+              <ActivityIndicator size="small" color={theme.onAccent} />
+            ) : (
+              <MaterialIcons name="send" size={20} color={theme.onAccent} />
+            )}
           </Pressable>
         </View>
       </SurfaceCard>
@@ -3925,6 +4161,60 @@ const makeStyles = (c: Palette) =>
     color: c.text,
     fontSize: 15,
     lineHeight: 22,
+  },
+  // --- Markdown của câu trả lời trợ lý ---
+  markdownStack: {
+    gap: Spacing.one,
+  },
+  markdownHeading: {
+    color: c.text,
+    fontSize: 15,
+    lineHeight: 22,
+    fontWeight: "700",
+  },
+  markdownBulletRow: {
+    flexDirection: "row",
+    gap: 6,
+  },
+  markdownBulletMarker: {
+    color: c.textSecondary,
+    fontSize: 15,
+    lineHeight: 22,
+  },
+  markdownBulletText: {
+    flex: 1,
+    color: c.text,
+    fontSize: 15,
+    lineHeight: 22,
+  },
+  markdownBold: {
+    fontWeight: "700",
+  },
+  markdownItalic: {
+    fontStyle: "italic",
+  },
+  markdownCode: {
+    fontFamily: Fonts.mono,
+    fontSize: 13.5,
+  },
+  // --- Indicator "đang soạn câu trả lời" ---
+  typingRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 5,
+    paddingVertical: 3,
+  },
+  typingDot: {
+    width: 6,
+    height: 6,
+    borderRadius: 3,
+    backgroundColor: c.textSecondary,
+  },
+  typingLabel: {
+    color: c.textSecondary,
+    fontFamily: Fonts.mono,
+    fontSize: 12,
+    marginLeft: 4,
   },
   bellButton: {
     width: 44,

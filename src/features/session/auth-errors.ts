@@ -14,6 +14,12 @@ const MESSAGES: Record<string, string> = {
   AUTH_OTP_RATE_LIMIT_EXCEEDED:
     "Gửi mã quá nhiều lần. Đợi một lúc rồi thử lại.",
   AUTH_TOKEN_INVALID: "Phiên đăng nhập không hợp lệ. Đăng nhập lại giúp nhé.",
+  AUTH_PHONE_REQUIRED:
+    "Tài khoản chưa có số điện thoại. Liên hệ nhà xe cập nhật giúp nhé.",
+  // Khoá tài khoản do nhà xe/hệ thống (FE-RESPONSE-LOCKDRIVER-PASSWORD.md).
+  USER_LOCKED: "Tài khoản đã bị khóa. Liên hệ nhà xe để mở lại.",
+  USER_INVALID_STATUS_TRANSITION:
+    "Tài khoản không ở trạng thái cho phép thao tác này. Liên hệ nhà xe.",
   VALIDATION_ERROR: "Thông tin nhập chưa hợp lệ. Kiểm tra lại rồi thử tiếp.",
   FORBIDDEN: "Tài khoản không có quyền dùng app này.",
   RATE_LIMITED: "Thao tác quá nhanh. Đợi một lúc rồi thử lại.",

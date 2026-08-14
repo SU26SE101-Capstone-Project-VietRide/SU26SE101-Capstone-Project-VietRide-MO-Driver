@@ -45,12 +45,70 @@ const VIETNAMESE_MESSAGE_CODES = new Set([
   "RAG_STREAM_ERROR",
 ]);
 
+// Mã hạ tầng/xác thực mọi service đều có thể trả (gateway, idempotency, quyền,
+// service tạm chết). Đặt ở đây để mọi bảng map riêng (trip-ops/shuttle/auth/
+// route-proposal) tự động có câu tiếng Việt, không phải chép lại từng file.
+// Bảng riêng vẫn override được vì chúng tra bảng của mình TRƯỚC khi rơi xuống
+// hàm này (vd FORBIDDEN ở shuttle nói rõ "chuyến trung chuyển không thuộc bạn").
+const COMMON_MESSAGES: Record<string, string> = {
+  // Quyền & phiên.
+  UNAUTHORIZED: "Phiên đăng nhập đã hết hạn. Đăng nhập lại giúp nhé.",
+  AUTH_TOKEN_INVALID: "Phiên đăng nhập không hợp lệ. Đăng nhập lại giúp nhé.",
+  FORBIDDEN: "Bạn không có quyền thực hiện thao tác này.",
+  ACCESS_DENIED: "Bạn không có quyền xem dữ liệu này.",
+  USER_FORBIDDEN: "Tài khoản của bạn không được phép thao tác này.",
+  INSUFFICIENT_ROLE: "Tài khoản của bạn không đủ quyền cho thao tác này.",
+  USER_INACTIVE: "Tài khoản đang bị tạm ngưng. Liên hệ nhà xe để mở lại.",
+  USER_LOCKED: "Tài khoản đã bị khóa. Liên hệ nhà xe để mở lại.",
+  USER_NOT_FOUND: "Không tìm thấy tài khoản này.",
+  // Dữ liệu gửi lên.
+  VALIDATION_ERROR: "Dữ liệu gửi lên không hợp lệ. Kiểm tra lại thông tin.",
+  VALIDATION_FAILED: "Dữ liệu gửi lên không hợp lệ. Kiểm tra lại thông tin.",
+  RESOURCE_NOT_FOUND: "Không tìm thấy dữ liệu yêu cầu.",
+  INVALID_SORT_FIELD: "Không sắp xếp được danh sách theo tiêu chí này.",
+  INVALID_FILTER: "Bộ lọc không hợp lệ.",
+  // Idempotency: mọi mutation của backend đều bắt Idempotency-Key.
+  IDEMPOTENCY_KEY_REQUIRED: "Thiếu khoá chống trùng. Thử lại thao tác giúp em.",
+  IDEMPOTENCY_KEY_MISMATCH:
+    "Nội dung đã thay đổi so với lần gửi trước. Tải lại rồi gửi lại giúp em.",
+  IDEMPOTENCY_KEY_REUSED:
+    "Thao tác này đã được gửi trước đó. Tải lại để xem kết quả.",
+  IDEMPOTENCY_REQUEST_PENDING: "Yêu cầu trước đang được xử lý, đợi một chút.",
+  IDEMPOTENCY_REQUEST_IN_PROGRESS:
+    "Yêu cầu trước đang được xử lý, đợi một chút.",
+  // Hệ thống / service phụ thuộc tạm gián đoạn — đều là lỗi thử lại được.
+  INTERNAL_ERROR: "Hệ thống đang gặp sự cố, thử lại sau ít phút.",
+  UPSTREAM_UNAVAILABLE: "Hệ thống đang gián đoạn, thử lại sau ít phút.",
+  TRIP_SERVICE_UNAVAILABLE: "Dịch vụ chuyến đang gián đoạn, thử lại sau ít phút.",
+  BOOKING_SERVICE_UNAVAILABLE: "Dịch vụ vé đang gián đoạn, thử lại sau ít phút.",
+  PARCEL_SERVICE_UNAVAILABLE:
+    "Dịch vụ hàng ký gửi đang gián đoạn, thử lại sau ít phút.",
+  USER_LOOKUP_UNAVAILABLE:
+    "Chưa tra được thông tin tài khoản, thử lại sau ít phút.",
+  RATE_LIMITED: "Thao tác quá nhanh. Đợi một lúc rồi thử lại.",
+  RATE_LIMIT_EXCEEDED: "Thao tác quá nhanh. Đợi một lúc rồi thử lại.",
+  MOBILE_APP_UPDATE_REQUIRED:
+    "App đã có bản mới bắt buộc. Cập nhật app rồi dùng tiếp giúp nhé.",
+};
+
 export function apiErrorDisplayMessage(error: unknown): string {
   if (error instanceof ApiError) {
     if (VIETNAMESE_MESSAGE_CODES.has(error.code)) {
       return error.message;
     }
-    return `Có lỗi xảy ra (mã ${error.code}). Thử lại hoặc báo điều hành.`;
+
+    const common = COMMON_MESSAGES[error.code];
+    if (common) {
+      return common;
+    }
+
+    // Mã lạ (backend thêm mã mới, chưa kịp map): KHÔNG in mã kỹ thuật lên màn
+    // hình cho crew đọc — vừa khó hiểu vừa trông như app lỗi. Mã + traceId đẩy
+    // vào console để còn tra được qua logcat/Sentry khi đại ca báo lại.
+    console.warn(
+      `[api] mã lỗi chưa map: ${error.code} (HTTP ${error.statusCode}, trace ${error.traceId ?? "n/a"})`,
+    );
+    return "Có lỗi xảy ra. Thử lại hoặc báo điều hành.";
   }
   return "Có lỗi xảy ra, thử lại sau.";
 }
