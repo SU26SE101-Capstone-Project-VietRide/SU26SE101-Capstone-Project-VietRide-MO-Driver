@@ -15,6 +15,12 @@ export function getTrip(tripId: string): Promise<TripDetails> {
   return apiRequest<TripDetails>(`/v1/trips/${tripId}`);
 }
 
-export function getSeatMap(tripId: string): Promise<SeatMapData> {
-  return apiRequest<SeatMapData>(`/v1/trips/${tripId}/seat-map`);
+// Sơ đồ ghế + hành lang từ seat-layout snapshot của Trip. KHÔNG gọi thêm
+// Vehicle API để lấy aisle — template xe có thể đã bị sửa sau khi Trip
+// snapshot (FE-RESPONSE-seat-map-aisle.md §5).
+export async function getSeatMap(tripId: string): Promise<SeatMapData> {
+  const data = await apiRequest<SeatMapData>(`/v1/trips/${tripId}/seat-map`);
+  // Rolling deploy: BE cũ có thể thiếu field → chuẩn hoá về []. Chỉ vậy thôi,
+  // KHÔNG tự chèn aisle nào (doc §3).
+  return { ...data, aisles: Array.isArray(data.aisles) ? data.aisles : [] };
 }

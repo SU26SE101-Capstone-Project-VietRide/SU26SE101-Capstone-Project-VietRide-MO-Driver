@@ -62,6 +62,13 @@ export type ResetPasswordData = {
   status: string;
 };
 
+// change-password (FE-RESPONSE-LOCKDRIVER-PASSWORD.md §6): BE revoke toàn bộ
+// refresh token sau khi đổi — FE phải xóa session local và về màn đăng nhập.
+export type ChangePasswordData = {
+  userId: string;
+  sessionsRevoked: boolean;
+};
+
 // ===== Trip =====
 
 export type ScheduleTrip = {
@@ -143,14 +150,20 @@ export type SeatCell = {
   deck: number;
 };
 
+// Vị trí hành lang: chèn lối đi ngay SAU cột ghế có col == afterCol.
+export type SeatMapAisle = {
+  afterCol: number;
+};
+
 export type SeatMapData = {
   tripId: string;
   vehicleType: string | null;
   seats: SeatCell[];
-  // Lối đi dọc thân xe — cùng shape với seatLayoutJson.aisles của Vehicle.
-  // BE chưa trả trong seat-map (đã gửi FE-REQUEST-seat-map-aisle.md); khai
-  // optional để BE bổ sung là FE ăn ngay, không vỡ khi thiếu.
-  aisles?: { afterCol: number }[] | null;
+  // Lối đi dọc thân xe, lấy từ immutable seat-layout snapshot của Trip
+  // (FE-RESPONSE-seat-map-aisle.md, BE đã fix 2026-08-13: luôn trả array).
+  // [] = layout không khai báo hành lang — KHÔNG được tự suy luận aisle khác.
+  // getSeatMap normalize field thiếu (BE cũ rolling deploy) về [].
+  aisles: SeatMapAisle[];
 };
 
 // ===== Booking / Boarding =====

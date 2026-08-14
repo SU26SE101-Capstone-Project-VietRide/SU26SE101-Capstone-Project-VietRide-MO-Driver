@@ -30,6 +30,7 @@ import {
   type RagRating,
   type ReportIncidentData,
   type SeatCell,
+  type SeatMapAisle,
   type TripDetails,
   type TripTargetEta,
 } from "@/api/types";
@@ -1311,7 +1312,7 @@ function ApiSeatGrid({
 }: {
   seatStatusByNumber: Map<string, "boarded" | "pending">;
   seats: SeatCell[];
-  aisles?: { afterCol: number }[] | null;
+  aisles: SeatMapAisle[];
 }) {
   const styles = useThemedStyles(makeStyles);
 
@@ -1331,22 +1332,12 @@ function ApiSeatGrid({
         const minCol = Math.min(...cols);
         const colCount = maxCol - minCol + 1;
 
-        // Cột lối đi chèn SAU col nào: ưu tiên dữ liệu BE (aisles.afterCol).
-        const aisleAfterCols = new Set(
-          (aisles ?? []).map((aisle) => aisle.afterCol),
-        );
-        // BE chưa trả aisles: nếu lưới 4 cột đặc kín ghế (bus 2+2 phổ thông,
-        // không có ô AISLE/ô khuyết nào để tự lộ lối đi) thì chèn hành lang
-        // giữa theo sơ đồ 2|2 — heuristic tạm, gỡ khi BE bổ sung aisles.
-        const isPlainSeat = (seat: SeatCell) =>
-          seat.seatNumber != null && seat.type?.toUpperCase() !== "AISLE";
-        if (
-          aisleAfterCols.size === 0 &&
-          colCount === 4 &&
-          deckSeats.filter(isPlainSeat).length === rows.length * colCount
-        ) {
-          aisleAfterCols.add(minCol + 1);
-        }
+        // Cột lối đi chèn SAU col nào — CHỈ theo dữ liệu BE (aisles.afterCol
+        // từ layout snapshot của Trip, FE-RESPONSE-seat-map-aisle.md).
+        // aisles=[] nghĩa là layout không có hành lang, không tự suy luận
+        // (heuristic 2|2 cũ đã gỡ theo yêu cầu của doc). Cùng cấu hình aisle
+        // áp cho mọi deck (contract v1); hỗ trợ nhiều aisle, không hard-code 1.
+        const aisleAfterCols = new Set(aisles.map((aisle) => aisle.afterCol));
 
         return (
           <View key={`deck-${deck}`} style={styles.seatGrid}>
@@ -1728,7 +1719,7 @@ function ParcelCard({
       <View style={styles.metaStack}>
         <View style={styles.metaRow}>
           <MaterialIcons name="scale" size={15} color={theme.textSecondary} />
-          <Text style={styles.metaText}>
+          <Text style={[styles.metaText, styles.metaTextGrow]}>
             Kích cỡ{" "}
             {sizeCategoryLabel(
               parcel.actualSizeCategory ?? parcel.sizeCategory,
@@ -1743,7 +1734,7 @@ function ParcelCard({
         {parcel.status === "PENDING_FINAL_PAYMENT" ? (
           <View style={styles.metaRow}>
             <MaterialIcons name="payments" size={15} color={theme.textSecondary} />
-            <Text style={styles.metaText}>
+            <Text style={[styles.metaText, styles.metaTextGrow]}>
               Khách còn thiếu{" "}
               {formatVnd(
                 (parcel.balanceRequiredVnd ?? 0) - (parcel.balancePaidVnd ?? 0),
@@ -1755,13 +1746,18 @@ function ParcelCard({
           </View>
         ) : null}
         {parcel.description ? (
-          <View style={styles.metaRow}>
+          // Mô tả từ backend có thể nhiều dòng → icon neo theo dòng đầu,
+          // text co giãn để xuống dòng thay vì tràn khỏi card.
+          <View style={[styles.metaRow, styles.metaRowTop]}>
             <MaterialIcons
               name="description"
               size={15}
               color={theme.textSecondary}
+              style={styles.metaIconTop}
             />
-            <Text style={styles.metaText}>{parcel.description}</Text>
+            <Text style={[styles.metaText, styles.metaTextGrow]}>
+              {parcel.description}
+            </Text>
           </View>
         ) : null}
       </View>
@@ -1873,18 +1869,22 @@ function ParcelCard({
                     <Image source={{ uri }} style={styles.evidenceThumb} />
                   </Pressable>
                 ))}
-                <ActionButton
-                  icon="photo-camera"
-                  label={`Ảnh bằng chứng (${evidenceUris.length}/${MAX_EVIDENCE_PHOTOS})`}
-                  tone="ghost"
-                  small
-                  disabled={
-                    busy ||
-                    uploadingEvidence ||
-                    evidenceUris.length >= MAX_EVIDENCE_PHOTOS
-                  }
-                  onPress={() => setEvidenceCameraOpen(true)}
-                />
+                {/* Bọc flex:1 để nút giãn hết phần ngang còn lại,
+                    rộng bằng các nút khác trong card. */}
+                <View style={styles.evidenceButtonWrap}>
+                  <ActionButton
+                    icon="photo-camera"
+                    label={`Ảnh bằng chứng (${evidenceUris.length}/${MAX_EVIDENCE_PHOTOS})`}
+                    tone="ghost"
+                    small
+                    disabled={
+                      busy ||
+                      uploadingEvidence ||
+                      evidenceUris.length >= MAX_EVIDENCE_PHOTOS
+                    }
+                    onPress={() => setEvidenceCameraOpen(true)}
+                  />
+                </View>
               </View>
               {evidenceUris.length > 0 ? (
                 <Text style={styles.parcelHint}>Chạm vào ảnh để xoá.</Text>
@@ -3764,6 +3764,17 @@ const makeStyles = (c: Palette) =>
     alignItems: "center",
     gap: 6,
   },
+  // Text trong metaRow phải flex:1 mới wrap trong card thay vì bị cắt ngang.
+  metaTextGrow: {
+    flex: 1,
+  },
+  // Row có text nhiều dòng: icon neo lên dòng đầu thay vì lơ lửng giữa block.
+  metaRowTop: {
+    alignItems: "flex-start",
+  },
+  metaIconTop: {
+    marginTop: 2.5,
+  },
   weighStack: {
     gap: Spacing.two,
   },
@@ -3785,6 +3796,10 @@ const makeStyles = (c: Palette) =>
     flexWrap: "wrap",
     alignItems: "center",
     gap: Spacing.one,
+  },
+  evidenceButtonWrap: {
+    flex: 1,
+    minWidth: 180,
   },
   evidenceThumb: {
     width: 52,

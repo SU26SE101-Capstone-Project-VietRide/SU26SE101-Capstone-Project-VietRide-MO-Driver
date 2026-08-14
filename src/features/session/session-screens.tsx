@@ -217,6 +217,12 @@ export function CrewSettingsScreen() {
         </View>
 
         <ActionButton
+          icon="lock-reset"
+          label="Đổi mật khẩu"
+          tone="secondary"
+          onPress={() => router.push("/auth/change-password")}
+        />
+        <ActionButton
           icon="logout"
           label="Đăng xuất"
           tone="ghost"

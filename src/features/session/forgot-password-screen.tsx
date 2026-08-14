@@ -20,32 +20,12 @@ import {
     StatusChip,
     SurfaceCard,
 } from "@/features/operations/ui";
+import { validatePassword } from "@/features/session/password-policy";
 import { useTheme, useThemedStyles } from "@/hooks/use-theme";
 
-// Ràng buộc mật khẩu khớp ResetPasswordCommandValidator của backend:
-// tối thiểu 8, tối đa 128 ký tự, có ít nhất 1 chữ cái VÀ 1 chữ số.
-const MIN_PASSWORD_LENGTH = 8;
-const MAX_PASSWORD_LENGTH = 128;
 const OTP_LENGTH = 6;
 
 type Step = "request" | "reset" | "done";
-
-// Trả về thông báo lỗi mật khẩu đầu tiên, hoặc null nếu hợp lệ.
-function validatePassword(password: string): string | null {
-  if (password.length < MIN_PASSWORD_LENGTH) {
-    return `Mật khẩu phải có ít nhất ${MIN_PASSWORD_LENGTH} ký tự.`;
-  }
-  if (password.length > MAX_PASSWORD_LENGTH) {
-    return `Mật khẩu tối đa ${MAX_PASSWORD_LENGTH} ký tự.`;
-  }
-  if (!/[a-zA-Z]/.test(password)) {
-    return "Mật khẩu phải có ít nhất 1 chữ cái.";
-  }
-  if (!/\d/.test(password)) {
-    return "Mật khẩu phải có ít nhất 1 chữ số.";
-  }
-  return null;
-}
 
 // Field message của backend (FluentValidation) là tiếng Anh → chỉ map theo
 // mã lỗi, không hiển thị thô.

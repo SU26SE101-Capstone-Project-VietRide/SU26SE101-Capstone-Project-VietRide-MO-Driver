@@ -2,6 +2,7 @@ import { apiRequest, refreshTokens } from "./client";
 import { clearTokens, getTokens, setTokens } from "./token-storage";
 import type {
   AuthUser,
+  ChangePasswordData,
   DevicePlatform,
   DeviceTokenData,
   FirebaseCustomTokenData,
@@ -66,6 +67,21 @@ export async function resetPassword(
 
   await clearTokens();
   return data;
+}
+
+// Đổi mật khẩu khi đã đăng nhập (FE-RESPONSE-LOCKDRIVER-PASSWORD.md §6, dùng
+// chung cho mọi role). KHÔNG trim/biến đổi password. Sau 200 BE đã revoke mọi
+// refresh token (PASSWORD_CHANGE) — caller phải xóa session local và về Login,
+// không gọi refresh bằng token cũ. Idempotency-Key do apiRequest tự thêm;
+// retry rớt mạng dùng lại đúng key (đúng quy tắc §3.2 của doc).
+export function changePassword(
+  currentPassword: string,
+  newPassword: string,
+): Promise<ChangePasswordData> {
+  return apiRequest<ChangePasswordData>("/v1/auth/change-password", {
+    method: "POST",
+    body: { currentPassword, newPassword },
+  });
 }
 
 // Khôi phục phiên lúc mở app: có refresh token thì đổi lấy access token mới.
