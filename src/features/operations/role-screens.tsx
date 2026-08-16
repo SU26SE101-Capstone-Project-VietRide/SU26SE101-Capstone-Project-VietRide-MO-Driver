@@ -330,7 +330,10 @@ export function DriverTripScreen() {
   const styles = useThemedStyles(makeStyles);
   const router = useRouter();
   const activeTrip = useSelectedTrip();
-  const detailsQuery = useTripDetails(activeTrip.trip?.tripId ?? null);
+  // live: poll 25s cho khớp nhịp manifest bên màn phụ xe — xem useTripDetails.
+  const detailsQuery = useTripDetails(activeTrip.trip?.tripId ?? null, {
+    live: true,
+  });
   const details = detailsQuery.data;
 
   const statusMeta = tripStatusMeta(activeTrip.trip?.status);
@@ -399,6 +402,14 @@ export function DriverTripScreen() {
   const eta = gps.eta ?? etaQuery.data?.eta ?? null;
   const gpsMeta = gpsStatusMeta(gps.status);
 
+  // useGpsBroadcast chỉ nối socket khi tripRunning, nên chuyến còn SCHEDULED thì
+  // màn này không nhận booking:created/updated — ghế đổi mà không hay. Nối socket
+  // crew listen-only cho quãng đó (hook này không xin quyền vị trí, không phát
+  // GPS). Truyền null khi GPS đang bật để không mở socket thứ hai cùng một chuyến.
+  const crewBooking = useCrewBookingEvents(tripRunning ? null : tripId);
+  const bookingEvent = gps.bookingEvent ?? crewBooking.bookingEvent;
+  const bookingUpdate = gps.bookingUpdate ?? crewBooking.bookingUpdate;
+
   // Banner booking mới chỉ hiện ~10s như toast rồi tự ẩn (dữ liệu ghế đã được
   // hook invalidate rồi, banner chỉ để báo). Đánh dấu eventId đã ẩn trong
   // callback setTimeout — không setState đồng bộ trong thân effect (rule
@@ -407,16 +418,16 @@ export function DriverTripScreen() {
     string | null
   >(null);
   useEffect(() => {
-    const event = gps.bookingEvent;
+    const event = bookingEvent;
     if (!event) {
       return;
     }
     const timer = setTimeout(() => setHiddenBookingEventId(event.eventId), 10_000);
     return () => clearTimeout(timer);
-  }, [gps.bookingEvent]);
+  }, [bookingEvent]);
   const bookingBanner =
-    gps.bookingEvent && gps.bookingEvent.eventId !== hiddenBookingEventId
-      ? gps.bookingEvent
+    bookingEvent && bookingEvent.eventId !== hiddenBookingEventId
+      ? bookingEvent
       : null;
   // Banner cho biến động booking khác (hủy/boarded/transfer) qua
   // booking:updated — cùng pattern tự ẩn sau 10s theo eventId.
@@ -424,7 +435,7 @@ export function DriverTripScreen() {
     string | null
   >(null);
   useEffect(() => {
-    const event = gps.bookingUpdate;
+    const event = bookingUpdate;
     if (!event) {
       return;
     }
@@ -433,10 +444,10 @@ export function DriverTripScreen() {
       10_000,
     );
     return () => clearTimeout(timer);
-  }, [gps.bookingUpdate]);
+  }, [bookingUpdate]);
   const bookingUpdateBanner =
-    gps.bookingUpdate && gps.bookingUpdate.eventId !== hiddenBookingUpdateId
-      ? bookingUpdateBannerText(gps.bookingUpdate)
+    bookingUpdate && bookingUpdate.eventId !== hiddenBookingUpdateId
+      ? bookingUpdateBannerText(bookingUpdate)
       : null;
   // Banner trễ: ưu tiên contract mới delayStatus/delayMinutes từ gps.eta,
   // gps.delay (trip:statusChanged) là dự phòng. gps.delay=null (đã
@@ -1263,6 +1274,7 @@ export function AssistantBoardingScreen() {
                       [
                         { label: "Đã lên", style: styles.seatBoarded },
                         { label: "Chưa lên", style: styles.seatPending },
+                        { label: "Đã đặt (chưa có vé)", style: styles.seatBooked },
                         { label: "Trống", style: styles.seatEmpty },
                         { label: "Lối đi", style: styles.seatAisleLegend },
                       ] as const
@@ -1388,16 +1400,25 @@ function ApiSeatGrid({
                     );
                   }
 
+                  // Nền là kho ghế của BE (seat.status), manifest phủ lên trên.
+                  // Ghế đã bán nhưng chưa có dòng trong manifest (giữ chỗ/chưa
+                  // xuất vé) từng bị tô "Trống" — đúng chỗ làm sơ đồ của phụ xe
+                  // lệch với ô "Ghế đã đặt" của tài xế (lấy từ seatSummary, vốn
+                  // đếm theo kho ghế). Giờ hiện "Đã đặt" để hai màn khớp nhau.
                   const boarding = seatStatusByNumber.get(seat.seatNumber);
+                  const seatState =
+                    boarding ??
+                    (seat.status?.toUpperCase() === "BOOKED" ? "booked" : null);
 
                   return (
                     <Fragment key={seat.seatNumber}>
                       <View
                         style={[
                           styles.seatCell,
-                          boarding == null && styles.seatEmpty,
-                          boarding === "boarded" && styles.seatBoarded,
-                          boarding === "pending" && styles.seatPending,
+                          seatState == null && styles.seatEmpty,
+                          seatState === "boarded" && styles.seatBoarded,
+                          seatState === "pending" && styles.seatPending,
+                          seatState === "booked" && styles.seatBooked,
                         ]}
                       >
                         <Text style={styles.seatLabel}>{seat.seatNumber}</Text>
@@ -3906,6 +3927,12 @@ const makeStyles = (c: Palette) =>
   seatPending: {
     backgroundColor: "rgba(255, 214, 0, 0.16)",
     borderColor: "rgba(255, 214, 0, 0.45)",
+  },
+  // Ghế BE báo BOOKED nhưng chưa có trong manifest — chưa soát vé được, phân
+  // biệt hẳn với "Chưa lên" (đã có vé, chỉ chờ khách lên xe).
+  seatBooked: {
+    backgroundColor: "rgba(41, 121, 255, 0.16)",
+    borderColor: "rgba(41, 121, 255, 0.45)",
   },
   seatPendingHere: {
     borderColor: "#FF5252",

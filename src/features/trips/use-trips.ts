@@ -17,11 +17,24 @@ export function useDriverSchedule(from: string, to: string) {
   });
 }
 
-export function useTripDetails(tripId: string | null) {
+// Nhịp poll cho màn điều hành đang mở — cố ý bằng 25s của useManifest để hai
+// màn crew không đọc dữ liệu ở hai thời điểm khác nhau.
+const TRIP_LIVE_REFETCH_MS = 25_000;
+
+// `live` chỉ bật ở màn đang trực tiếp điều hành chuyến. seatSummary đổi mỗi lần
+// khách đặt/hủy vé, mà socket booking của màn Chuyến chỉ nối khi chuyến đang
+// chạy/đón khách; RN cũng không có focusManager nên refetchOnWindowFocus vô
+// hiệu. Thiếu nhịp này thì ô "Ghế đã đặt" của tài xế đứng yên tới lúc kéo
+// xuống refresh, trong khi manifest của phụ xe vẫn poll 25s → hai màn lệch nhau.
+export function useTripDetails(
+  tripId: string | null,
+  options: { live?: boolean } = {},
+) {
   return useQuery({
     queryKey: ["trip", tripId],
     queryFn: () => getTrip(tripId as string),
     enabled: tripId != null,
+    refetchInterval: options.live ? TRIP_LIVE_REFETCH_MS : undefined,
   });
 }
 
