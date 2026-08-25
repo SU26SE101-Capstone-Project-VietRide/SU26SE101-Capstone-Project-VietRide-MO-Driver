@@ -321,6 +321,15 @@ export type AssistantParcelItem = {
   finalPaymentDeadline: string | null;
   description: string | null;
   photoUrl: string | null;
+  // ===== Contract screen-ready (API-Parcel-Driver.md §6.1) =====
+  // Production hiện vẫn trả PagedResult cũ nên toàn bộ nhóm này là optional;
+  // có `availableActions` nghĩa là backend đã bật contract mới.
+  dropoffLocation?: ParcelLocationRef | null;
+  currentCustody?: ParcelCustodyState | null;
+  activeIncident?: ParcelIncident | null;
+  paymentState?: ParcelPaymentState | null;
+  identityCheckHints?: ParcelIdentityHints | null;
+  availableActions?: string[] | null;
 };
 
 export type AssistantParcelListData = {
@@ -427,6 +436,195 @@ export type ResendDeliveryEmailData = {
   parcelId: string;
   status: string | null;
   expiresAt: string;
+};
+
+// ===== Custody v2 cho Driver/Assistant (docs/Implements/API-Parcel-Driver.md)
+
+// Vị trí custody. `type` để string vì backend có thể thêm giá trị mới
+// (ORIGIN_STATION | ROUTE_STOP | DESTINATION_STATION | VEHICLE | STATION).
+export type ParcelLocationRef = {
+  type: string | null;
+  id: string | null;
+  name: string | null;
+  orderIndex: number | null;
+  eta: string | null;
+};
+
+// Tình trạng thanh toán do backend tính sẵn — FE không tự cộng trừ.
+export type ParcelPaymentState = {
+  depositRequiredVnd: number | null;
+  depositPaidVnd: number | null;
+  balanceRequiredVnd: number | null;
+  balancePaidVnd: number | null;
+  finalPaymentDeadline: string | null;
+  isFullyPaid: boolean;
+};
+
+// Gợi ý đối chiếu kiện vật lý trước khi load/unload (§11: bắt buộc hiển thị).
+export type ParcelIdentityHints = {
+  photoUrl: string | null;
+  description: string | null;
+  expectedWeightKg: number | null;
+  actualWeightKg: number | null;
+  expectedLengthCm: number | null;
+  expectedWidthCm: number | null;
+  expectedHeightCm: number | null;
+  actualLengthCm: number | null;
+  actualWidthCm: number | null;
+  actualHeightCm: number | null;
+};
+
+// Custody hiện tại của kiện. `trackingConfidence`: CONFIRMED_SCAN |
+// INFERRED | UNKNOWN… để string, UI map defensive.
+export type ParcelCustodyState = {
+  lastEventType: string | null;
+  lastConfirmedLocation: ParcelLocationRef | null;
+  lastConfirmedAt: string | null;
+  currentTripId: string | null;
+  currentVehicleId: string | null;
+  trackingConfidence: string | null;
+  hasTrackingGap: boolean;
+};
+
+// Sự cố đang mở của kiện (WRONG_STOP, UNSCANNED_HANDOFF,
+// PACKAGE_IDENTITY_MISMATCH…). Có incident → kiện đang chờ điều hành xử lý.
+export type ParcelIncident = {
+  incidentId: string;
+  type: string | null;
+  status: string | null;
+  searchDeadline: string | null;
+  nextUpdateAt: string | null;
+  slaState: string | null;
+  operatorProcessBreach: boolean | null;
+};
+
+// Custody event vừa được tạo bởi mutation (null với qr-scan vì không mutate).
+export type ParcelCustodyEvent = {
+  eventId: string;
+  eventType: string | null;
+  actualLocationType: string | null;
+  actualLocationId: string | null;
+  locationSnapshot: string | null;
+  occurredAt: string | null;
+  sequence: number | null;
+};
+
+// Ảnh chụp trạng thái kiện trong action response.
+export type ParcelStateSnapshot = {
+  parcelId: string;
+  parcelCode: string | null;
+  status: string | null;
+  dropoffLocation: ParcelLocationRef | null;
+  paymentState: ParcelPaymentState | null;
+  identityCheckHints: ParcelIdentityHints | null;
+};
+
+// Shape chung của qr-scan, check-in, load, unload, deliver, custody-scan,
+// custody-exception (§5.1). FE merge thẳng vào card, không refetch từng kiện.
+export type AssistantParcelActionData = {
+  parcelState: ParcelStateSnapshot;
+  currentCustody: ParcelCustodyState | null;
+  activeIncident: ParcelIncident | null;
+  createdCustodyEvent: ParcelCustodyEvent | null;
+  availableActions: string[] | null;
+  warning: string | null;
+};
+
+// Điểm dừng theo thứ tự chạy, kèm mốc thực tế để biết đã tới/rời chưa.
+export type AssistantManifestStop = {
+  stopId: string;
+  name: string | null;
+  orderIndex: number;
+  estimatedArrivalAt: string | null;
+  status: string | null;
+  actualArrivalAt: string | null;
+  actualDepartureAt: string | null;
+};
+
+// Vị trí vận hành hiện tại của xe — nguồn duy nhất để biết được phép dỡ kiện
+// tại đây hay chưa (§7.4 yêu cầu status ARRIVED và chưa departed).
+export type AssistantOperationalLocation = {
+  location: ParcelLocationRef | null;
+  status: string | null;
+  arrivedAt: string | null;
+  departedAt: string | null;
+};
+
+export type AssistantTripContext = {
+  trip: {
+    tripId: string;
+    status: string | null;
+    departureAt: string | null;
+    eta: string | null;
+    route: {
+      routeId: string | null;
+      name: string | null;
+      origin: ParcelLocationRef | null;
+      destination: ParcelLocationRef | null;
+    } | null;
+    vehicle: {
+      vehicleId: string | null;
+      licensePlate: string | null;
+      status: string | null;
+    } | null;
+    stops: AssistantManifestStop[] | null;
+  } | null;
+  currentOperationalLocation: AssistantOperationalLocation | null;
+  orderedStops: AssistantManifestStop[] | null;
+};
+
+// Số liệu tóm tắt do backend đếm — FE không tự đếm lại trên trang hiện tại.
+export type AssistantParcelSummary = {
+  total: number;
+  checkedIn: number;
+  loaded: number;
+  expectedAtCurrentStop: number;
+  unloaded: number;
+  exceptionCount: number;
+  unresolvedCount: number;
+};
+
+export type AssistantParcelPagination = {
+  page: number;
+  pageSize: number;
+  totalItems: number;
+  totalPages: number;
+  hasNextPage: boolean;
+  hasPreviousPage: boolean;
+};
+
+// GET /v1/assistant/trips/{tripId}/parcels — contract screen-ready (§6.1).
+// tripContext/summary null nghĩa là backend còn contract cũ; client tự dựng
+// bản tương thích trong api/parcel.ts.
+export type AssistantParcelManifestData = {
+  tripContext: AssistantTripContext | null;
+  summary: AssistantParcelSummary | null;
+  items: AssistantParcelItem[];
+  pagination: AssistantParcelPagination;
+};
+
+// POST /v1/assistant/trips/{tripId}/stops/{stopId}/reconcile (§8.3).
+export type StopReconcileUnresolvedParcel = {
+  parcelId: string;
+  parcelCode: string | null;
+  photoUrl: string | null;
+  expectedDropoff: ParcelLocationRef | null;
+  lastCustody: ParcelCustodyState | null;
+  incidentId: string | null;
+  incidentType: string | null;
+  reason: string | null;
+  recommendedAction: string | null;
+};
+
+export type StopReconcileData = {
+  expectedCount: number;
+  scannedCount: number;
+  manualExceptionCount: number;
+  unresolvedParcels: StopReconcileUnresolvedParcel[] | null;
+  canDepart: boolean;
+  requiresSupervisorApproval: boolean;
+  // Alias read-only của bản cũ; FE mới dùng `unresolvedParcels`.
+  unresolvedParcelIds?: string[] | null;
 };
 
 // POST /v1/firebase/custom-token — đổi JWT app lấy Firebase custom token để

@@ -56,7 +56,8 @@ function ensureFirebase(): { app: FirebaseApp; auth: Auth } {
 // thiếu quyền/quá cỡ — caller hiển thị nguyên văn.
 export async function uploadEvidencePhotos(
   parcelId: string,
-  kind: "check-in" | "delivery",
+  // "custody": ảnh hiện trường kèm báo sự cố custody (API-Parcel-Driver §8.1).
+  kind: "check-in" | "delivery" | "custody",
   localUris: string[],
 ): Promise<string[]> {
   if (localUris.length === 0) {

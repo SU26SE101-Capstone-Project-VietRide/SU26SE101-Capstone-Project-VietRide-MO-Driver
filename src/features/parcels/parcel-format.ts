@@ -1,3 +1,4 @@
+import { ApiError } from "@/api/client";
 import type { Tone } from "@/features/operations/mock-data";
 
 // Format mã kiện chính thức (API-Parcel_NEWST.md): bản mới VR-PCL-yyyymmdd-8
@@ -108,7 +109,10 @@ export type ParcelAction =
   | "deliver"
   | "confirm-delivery"
   | "confirm-transfer"
-  | "resend-email";
+  | "resend-email"
+  // Custody v2 (API-Parcel-Driver.md §8): ghi nhận quét và báo sự cố.
+  | "custody-scan"
+  | "custody-exception";
 
 export function allowedParcelActions(
   status: string | null | undefined,
@@ -137,4 +141,187 @@ export function allowedParcelActions(
       // migrate sang status v2, không còn thao tác trực tiếp.
       return [];
   }
+}
+
+// ===== Contract custody v2 (docs/Implements/API-Parcel-Driver.md) =====
+
+// Tên thao tác backend trả trong `availableActions`. §11: backend là nguồn
+// truth, FE chỉ enable CTA có trong danh sách — không tự suy từ status.
+const SERVER_ACTION_MAP: Record<string, ParcelAction> = {
+  CHECK_IN: "check-in",
+  REWEIGH: "reweigh",
+  LOAD: "load",
+  UNLOAD: "unload",
+  DELIVER: "deliver",
+  CONFIRM_DELIVERY: "confirm-delivery",
+  MANUAL_CONFIRM: "confirm-delivery",
+  CONFIRM_TRANSFER: "confirm-transfer",
+  RESEND_DELIVERY_EMAIL: "resend-email",
+  RESEND_EMAIL: "resend-email",
+  CUSTODY_SCAN: "custody-scan",
+  CUSTODY_EXCEPTION: "custody-exception",
+};
+
+// Danh sách thao tác cho một card. Có `availableActions` (contract mới) thì
+// dùng nguyên; backend production còn cũ thì rơi về bảng suy theo status.
+export function resolveParcelActions(parcel: {
+  status: string | null;
+  availableActions?: string[] | null;
+}): ParcelAction[] {
+  if (!Array.isArray(parcel.availableActions)) {
+    return allowedParcelActions(parcel.status);
+  }
+
+  const actions: ParcelAction[] = [];
+  for (const raw of parcel.availableActions) {
+    const mapped = SERVER_ACTION_MAP[raw];
+    // Backend thêm action mới mà app chưa biết vẽ nút → bỏ qua, không đoán.
+    if (mapped && !actions.includes(mapped)) {
+      actions.push(mapped);
+    }
+  }
+  return actions;
+}
+
+// Vị trí custody hiển thị gọn: ưu tiên tên bến/điểm dừng backend snapshot.
+export function locationLabel(
+  location:
+    | { type?: string | null; name?: string | null; orderIndex?: number | null }
+    | null
+    | undefined,
+): string {
+  if (!location) {
+    return "—";
+  }
+  if (location.name) {
+    return location.orderIndex != null
+      ? `${location.name} (điểm ${location.orderIndex + 1})`
+      : location.name;
+  }
+  switch (location.type) {
+    case "ORIGIN_STATION":
+      return "Bến đi";
+    case "DESTINATION_STATION":
+      return "Bến cuối";
+    case "ROUTE_STOP":
+      return "Điểm dừng dọc đường";
+    case "VEHICLE":
+      return "Trên xe";
+    default:
+      return location.type ?? "—";
+  }
+}
+
+// Loại custody event (lastEventType / createdCustodyEvent.eventType).
+export function custodyEventLabel(eventType: string | null | undefined): string {
+  switch (eventType) {
+    case "ACCEPTED":
+      return "Đã nhận kiện";
+    case "LOADED":
+      return "Đã lên xe";
+    case "ARRIVED_AT_STOP":
+      return "Đã tới điểm dừng";
+    case "UNLOADED":
+      return "Đã dỡ khỏi xe";
+    case "HANDOFF":
+      return "Đã bàn giao";
+    case "RETURNED_TO_STATION":
+      return "Đã trả về bến";
+    case "FORWARDED_OUT":
+      return "Đã chuyển sang chuyến khác";
+    case "FORWARDED_IN":
+      return "Nhận từ chuyến khác";
+    case "MANUAL_CUSTODY_EXCEPTION":
+      return "Báo sự cố thủ công";
+    default:
+      return eventType ?? "—";
+  }
+}
+
+// Độ tin cậy của chuỗi theo dõi. Không phải CONFIRMED_SCAN nghĩa là vị trí
+// đang được suy đoán → nhắc phụ xe quét lại trước khi thao tác tiếp.
+export function trackingConfidenceMeta(confidence: string | null | undefined): {
+  label: string;
+  tone: Tone;
+} {
+  switch (confidence) {
+    case "CONFIRMED_SCAN":
+      return { label: "Đã quét xác nhận", tone: "success" };
+    case "INFERRED":
+      return { label: "Suy đoán từ chuyến", tone: "warning" };
+    case "UNKNOWN":
+      return { label: "Chưa rõ vị trí", tone: "danger" };
+    default:
+      return { label: confidence ?? "—", tone: "neutral" };
+  }
+}
+
+export function incidentTypeLabel(type: string | null | undefined): string {
+  switch (type) {
+    case "WRONG_STOP":
+      return "Dỡ nhầm điểm";
+    case "PACKAGE_IDENTITY_MISMATCH":
+      return "Kiện không khớp mô tả";
+    case "UNSCANNED_HANDOFF":
+      return "Bàn giao không quét QR";
+    case "MISSING_PARCEL":
+      return "Thất lạc kiện";
+    default:
+      return type ?? "Sự cố kiện";
+  }
+}
+
+export function incidentStatusLabel(status: string | null | undefined): string {
+  switch (status) {
+    case "SEARCHING":
+      return "Đang tìm kiếm";
+    case "RESOLVED":
+      return "Đã xử lý";
+    case "ESCALATED":
+      return "Đã báo cấp trên";
+    case "LOST_CONFIRMED":
+      return "Xác nhận thất lạc";
+    default:
+      return status ?? "—";
+  }
+}
+
+// Hành động backend khuyến nghị trong reconcile/lỗi mismatch.
+export function recommendedActionLabel(action: string | null | undefined): string {
+  switch (action) {
+    case "SEARCH_VEHICLE_OR_STATION":
+      return "Tìm lại kiện trên xe hoặc tại bến.";
+    case "KEEP_ON_VEHICLE_OR_REPORT_CUSTODY_EXCEPTION":
+      return "Giữ kiện trên xe, hoặc báo sự cố nếu đã lỡ dỡ xuống.";
+    default:
+      return action ?? "—";
+  }
+}
+
+// Lỗi 409 PARCEL_CUSTODY_LOCATION_MISMATCH mang structured fields
+// (expectedStop, actualStop, requiredAction). §10: phải hiển thị đúng bến
+// mong đợi và hành động bắt buộc, KHÔNG cho phép "dỡ ép".
+export type CustodyLocationMismatch = {
+  expectedStop: string | null;
+  actualStop: string | null;
+  requiredAction: string | null;
+};
+
+export function custodyLocationMismatch(
+  error: unknown,
+): CustodyLocationMismatch | null {
+  if (
+    !(error instanceof ApiError) ||
+    error.code !== "PARCEL_CUSTODY_LOCATION_MISMATCH"
+  ) {
+    return null;
+  }
+  const fields = Object.fromEntries(
+    (error.fields ?? []).map((item) => [item.field, item.message]),
+  );
+  return {
+    expectedStop: fields.expectedStop ?? null,
+    actualStop: fields.actualStop ?? null,
+    requiredAction: fields.requiredAction ?? null,
+  };
 }

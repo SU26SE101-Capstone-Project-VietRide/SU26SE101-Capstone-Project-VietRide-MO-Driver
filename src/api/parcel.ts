@@ -1,17 +1,14 @@
 import { apiRequest } from "./client";
-import { newIdempotencyKey } from "./idempotency";
 import type {
-  AssistantParcelListData,
-  CheckInParcelData,
+  AssistantParcelActionData,
+  AssistantParcelItem,
+  AssistantParcelManifestData,
   ConfirmParcelTransferData,
-  DeliverParcelData,
-  LoadParcelData,
   ManualConfirmParcelData,
   ParcelDetail,
   ResendDeliveryEmailData,
   ReweighParcelData,
-  ScanParcelQrData,
-  UnloadParcelData,
+  StopReconcileData,
 } from "./types";
 
 // Chi tiết 1 kiện. Mọi role có token đều gọi được; backend kiểm quyền theo
@@ -20,46 +17,187 @@ export function getParcel(parcelId: string): Promise<ParcelDetail> {
   return apiRequest<ParcelDetail>(`/v1/parcels/${parcelId}`);
 }
 
-// Danh sách kiện của chuyến mà Assistant được phân công (read-only, không cần
-// Idempotency-Key). Nguồn parcelId cho các thao tác reweigh/unload/confirm.
-export function getAssistantTripParcels(
+// ===== Chuẩn hoá contract cũ ↔ mới =====================================
+// docs/Implements/API-Parcel-Driver.md §1: production còn trả PagedResult cũ
+// cho manifest và response phẳng {parcelId,parcelCode,status} cho mutation,
+// trong khi source/local đã đổi sang manifest screen-ready + action response.
+// Toàn bộ app phía trên chỉ làm việc với shape MỚI; hai hàm dưới đây dựng bản
+// tương thích khi backend còn cũ, nên không phải rải feature-flag khắp UI.
+
+type RawRecord = Record<string, unknown>;
+
+function asRecord(value: unknown): RawRecord | null {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as RawRecord)
+    : null;
+}
+
+function asNumber(value: unknown, fallback: number): number {
+  return typeof value === "number" && Number.isFinite(value) ? value : fallback;
+}
+
+// Manifest có `tripContext` hoặc item có `availableActions` ⇒ backend đã bật
+// contract mới (§11: không tự suy thao tác từ status khi backend đã trả).
+export function manifestHasCustodyContract(
+  manifest: AssistantParcelManifestData | undefined | null,
+): boolean {
+  if (!manifest) {
+    return false;
+  }
+  return (
+    manifest.tripContext != null ||
+    manifest.items.some((item) => Array.isArray(item.availableActions))
+  );
+}
+
+function normalizeManifest(raw: unknown): AssistantParcelManifestData {
+  const record = asRecord(raw) ?? {};
+  const items = Array.isArray(record.items)
+    ? (record.items as AssistantParcelItem[])
+    : [];
+  const pagination = asRecord(record.pagination);
+
+  return {
+    tripContext:
+      (asRecord(
+        record.tripContext,
+      ) as AssistantParcelManifestData["tripContext"]) ?? null,
+    summary:
+      (asRecord(record.summary) as AssistantParcelManifestData["summary"]) ??
+      null,
+    items,
+    pagination: {
+      // Contract cũ để các field phân trang phẳng ngay trên data.
+      page: asNumber(pagination?.page ?? record.page, 1),
+      pageSize: asNumber(pagination?.pageSize ?? record.pageSize, items.length),
+      totalItems: asNumber(
+        pagination?.totalItems ?? record.totalItems,
+        items.length,
+      ),
+      totalPages: asNumber(pagination?.totalPages ?? record.totalPages, 1),
+      hasNextPage: Boolean(pagination?.hasNextPage ?? record.hasNextPage),
+      hasPreviousPage: Boolean(
+        pagination?.hasPreviousPage ?? record.hasPreviousPage,
+      ),
+    },
+  };
+}
+
+// Mutation response: mới thì có `parcelState`; cũ thì phẳng → bọc lại để UI
+// chỉ đọc một shape. availableActions=null nghĩa "backend không nói", UI rơi
+// về bảng suy theo status.
+function normalizeActionResponse(
+  raw: unknown,
+  parcelId: string,
+): AssistantParcelActionData {
+  const record = asRecord(raw) ?? {};
+  const state = asRecord(record.parcelState);
+  const source = state ?? record;
+
+  return {
+    parcelState: {
+      parcelId: (source.parcelId as string) ?? parcelId,
+      parcelCode: (source.parcelCode as string | null) ?? null,
+      status: (source.status as string | null) ?? null,
+      dropoffLocation:
+        (source.dropoffLocation as AssistantParcelActionData["parcelState"]["dropoffLocation"]) ??
+        null,
+      paymentState:
+        (source.paymentState as AssistantParcelActionData["parcelState"]["paymentState"]) ??
+        null,
+      identityCheckHints:
+        (source.identityCheckHints as AssistantParcelActionData["parcelState"]["identityCheckHints"]) ??
+        null,
+    },
+    currentCustody:
+      (record.currentCustody as AssistantParcelActionData["currentCustody"]) ??
+      null,
+    activeIncident:
+      (record.activeIncident as AssistantParcelActionData["activeIncident"]) ??
+      null,
+    createdCustodyEvent:
+      (record.createdCustodyEvent as AssistantParcelActionData["createdCustodyEvent"]) ??
+      null,
+    availableActions: Array.isArray(record.availableActions)
+      ? (record.availableActions as string[])
+      : null,
+    warning: (record.warning as string | null) ?? null,
+  };
+}
+
+// ===== Manifest ========================================================
+
+export type AssistantParcelManifestParams = {
+  stopId?: string;
+  status?: string;
+  hasException?: boolean;
+  search?: string;
+  page?: number;
+  pageSize?: number;
+};
+
+// Manifest screen-ready của chuyến (§6.1): một lần gọi ra đủ trip context, số
+// liệu tóm tắt, custody/incident và thao tác hợp lệ của từng kiện — không
+// N+1 gọi detail cho từng card. Read-only, không cần Idempotency-Key.
+export async function getAssistantTripParcels(
   tripId: string,
-  params: { page?: number; pageSize?: number } = {},
-): Promise<AssistantParcelListData> {
+  params: AssistantParcelManifestParams = {},
+): Promise<AssistantParcelManifestData> {
   const query = new URLSearchParams();
+  if (params.stopId) query.set("stopId", params.stopId);
+  if (params.status) query.set("status", params.status);
+  if (params.hasException != null) {
+    query.set("hasException", String(params.hasException));
+  }
+  // Backend giới hạn 100 ký tự; cắt sớm để khỏi ăn 422 chỉ vì gõ dài.
+  if (params.search) query.set("search", params.search.trim().slice(0, 100));
   if (params.page != null) query.set("page", String(params.page));
   if (params.pageSize != null) query.set("pageSize", String(params.pageSize));
 
   const queryString = query.toString();
   const suffix = queryString ? `?${queryString}` : "";
-  return apiRequest<AssistantParcelListData>(
+  const raw = await apiRequest<unknown>(
     `/v1/assistant/trips/${tripId}/parcels${suffix}`,
   );
+  return normalizeManifest(raw);
 }
+
+// ===== QR scan =========================================================
+
+// Quét QR kiện: tra cứu kiện theo mã trong chuyến của assistant. Chỉ đọc,
+// KHÔNG đổi trạng thái (dù là POST) và backend đánh dấu [SkipIdempotency].
+export async function scanParcelQr(
+  tripId: string,
+  parcelCode: string,
+): Promise<AssistantParcelActionData> {
+  const raw = await apiRequest<unknown>(
+    `/v1/assistant/trips/${tripId}/parcels/qr-scan`,
+    { method: "POST", body: { parcelCode } },
+  );
+  return normalizeActionResponse(raw, "");
+}
+
+// ===== Vòng đời kiện tại xe ===========================================
 
 export type CheckInParcelInput = {
   tripId: string;
   parcelCode: string;
-  // Ảnh bằng chứng nhận kiện (URL đã upload). Optional — luồng upload cho crew
-  // chưa được BE chốt Storage Rules, xem docs/Implements/API-Parcel-QR-Crew.md.
+  // Ảnh bằng chứng nhận kiện (URL Firebase đã upload), tối đa 3.
   photoUrls?: string[];
 };
 
 // Assistant xác nhận sender mang đúng kiện tới bến (Settlement v2).
 // Chỉ nhận kiện RESERVED, đúng trip/code và trước latestCheckInAt.
-// RESERVED -> CHECKED_IN. Quá hạn chưa check-in → backend tự REJECTED, mất cọc.
-export function checkInParcel(
+// Quá hạn chưa check-in → backend tự REJECTED, mất cọc.
+export async function checkInParcel(
   parcelId: string,
   input: CheckInParcelInput,
-): Promise<CheckInParcelData> {
-  return apiRequest<CheckInParcelData>(
+): Promise<AssistantParcelActionData> {
+  const raw = await apiRequest<unknown>(
     `/v1/assistant/parcels/${parcelId}/check-in`,
-    {
-      method: "POST",
-      body: input,
-      headers: { "Idempotency-Key": newIdempotencyKey() },
-    },
+    { method: "POST", body: input },
   );
+  return normalizeActionResponse(raw, parcelId);
 }
 
 // Settlement v2: chỉ gửi 4 số đo; backend tự tính DIM/chargeable weight, suy
@@ -74,18 +212,15 @@ export type ReweighParcelInput = {
 // Assistant cân lại kiện CHECKED_IN (phải trước loadCutoffAt). Kết quả:
 // còn balance → PENDING_FINAL_PAYMENT (khách trả nốt qua app khách);
 // đủ tiền/thừa cọc → READY_TO_LOAD (thừa thì backend tự hoàn, không chặn load);
-// vượt tải → PENDING_OPERATOR_ACTION. Bắt buộc Idempotency-Key.
+// vượt tải → PENDING_OPERATOR_ACTION. Đây là endpoint DUY NHẤT của nhóm này
+// không trả action response (§5.2).
 export function reweighParcel(
   parcelId: string,
   input: ReweighParcelInput,
 ): Promise<ReweighParcelData> {
   return apiRequest<ReweighParcelData>(
     `/v1/assistant/parcels/${parcelId}/reweigh`,
-    {
-      method: "POST",
-      body: input,
-      headers: { "Idempotency-Key": newIdempotencyKey() },
-    },
+    { method: "POST", body: input },
   );
 }
 
@@ -95,101 +230,192 @@ export type LoadParcelInput = {
 };
 
 // Assistant scan xếp kiện lên xe. Chỉ nhận kiện READY_TO_LOAD.
-// READY_TO_LOAD -> LOADED; Trip cargo ledger chuyển reservation thành loaded.
-export function loadParcel(
+// READY_TO_LOAD -> LOADED; custody append LOADED tại ORIGIN_STATION.
+export async function loadParcel(
   parcelId: string,
   input: LoadParcelInput,
-): Promise<LoadParcelData> {
-  return apiRequest<LoadParcelData>(`/v1/assistant/parcels/${parcelId}/load`, {
-    method: "POST",
-    body: input,
-    headers: { "Idempotency-Key": newIdempotencyKey() },
-  });
+): Promise<AssistantParcelActionData> {
+  const raw = await apiRequest<unknown>(
+    `/v1/assistant/parcels/${parcelId}/load`,
+    { method: "POST", body: input },
+  );
+  return normalizeActionResponse(raw, parcelId);
 }
 
-// Crew (driver + assistant) xác nhận giao thay người nhận khi khách không tự
-// confirm qua email. BE xác nhận 2026-08-08: đây là route chính cho app mobile;
-// /v1/assistant/.../confirm-delivery chỉ là alias cùng command. Kiện phải đang
-// DELIVERED_PENDING_CONFIRM (sai → 400 PARCEL_NOT_PENDING_CONFIRM); sau khi
-// confirm, token của khách bị revoke, status -> DELIVERY_CONFIRMED.
-export function confirmParcelDelivery(
+// Vị trí dỡ thực tế. `kind` phải ROUTE_STOP kèm đúng dropoffStopId, hoặc
+// DESTINATION_STATION kèm đúng bến cuối khi kiện không gắn stop (§7.4).
+export type ParcelUnloadLocation = {
+  kind: "ROUTE_STOP" | "DESTINATION_STATION";
+  id: string;
+};
+
+export type UnloadParcelInput = {
+  // Bắt buộc: backend chặn dỡ kiện không quét QR (422 PARCEL_SCAN_REQUIRED).
+  parcelCode: string;
+  actualLocation: ParcelUnloadLocation;
+  photoUrls?: string[];
+};
+
+// Assistant dỡ kiện khỏi xe. IN_TRANSIT -> UNLOADED, nhả cargo và append
+// custody UNLOADED trong cùng transaction. KHÔNG phải bước giao hàng.
+// Sai bến → 409 PARCEL_CUSTODY_LOCATION_MISMATCH và backend KHÔNG đổi trạng
+// thái, KHÔNG nhả cargo; tuyệt đối không có đường "dỡ ép" qua endpoint này.
+// `input` bỏ trống = gọi kiểu contract cũ (production chưa nhận body mới).
+export async function unloadParcel(
   parcelId: string,
-  note: string,
-): Promise<ManualConfirmParcelData> {
-  return apiRequest<ManualConfirmParcelData>(
-    `/v1/crew/parcels/${parcelId}/manual-confirm`,
-    {
-      method: "POST",
-      // API-Parcel_NEWST.md: body nhận cả `confirmNote` lẫn alias `note`,
-      // `confirmNote` là tên canonical (ưu tiên) — note sau trim 1..500.
-      body: { confirmNote: note.trim() },
-      headers: { "Idempotency-Key": newIdempotencyKey() },
-    },
-  );
-}
-
-// Assistant dỡ kiện khỏi xe (không body). IN_TRANSIT -> UNLOADED.
-// Chỉ nhả cargo, KHÔNG sinh delivery token và KHÔNG phải bước giao hàng.
-// Backend chặn nếu xe chưa tới đúng mốc: 422 DROP_OFF_STOP_NOT_ARRIVED (kiện gắn
-// stop) hoặc 422 DESTINATION_TERMINAL_NOT_ARRIVED (kiện trả tại bến cuối).
-export function unloadParcel(parcelId: string): Promise<UnloadParcelData> {
-  return apiRequest<UnloadParcelData>(
+  input?: UnloadParcelInput,
+): Promise<AssistantParcelActionData> {
+  const raw = await apiRequest<unknown>(
     `/v1/assistant/parcels/${parcelId}/unload`,
-    {
-      method: "POST",
-      headers: { "Idempotency-Key": newIdempotencyKey() },
-    },
+    { method: "POST", ...(input ? { body: input } : {}) },
   );
+  return normalizeActionResponse(raw, parcelId);
 }
 
 // Assistant giao kiện cho người nhận.
-// UNLOADED -> DELIVERED_PENDING_CONFIRM, sinh delivery token TTL 48 giờ.
-// Đây là bước bắt buộc giữa unload và confirm-delivery. photoUrls là ảnh bằng
-// chứng giao (optional — luồng upload cho crew chưa chốt, xem API-Parcel-QR-Crew.md).
-export function deliverParcel(
+// UNLOADED -> DELIVERED_PENDING_CONFIRM, custody append HANDOFF, revoke token
+// cũ và gửi link nhận hàng mới nếu kiện có recipientEmail.
+export async function deliverParcel(
   parcelId: string,
   photoUrls?: string[],
-): Promise<DeliverParcelData> {
-  return apiRequest<DeliverParcelData>(
+): Promise<AssistantParcelActionData> {
+  const raw = await apiRequest<unknown>(
     `/v1/assistant/parcels/${parcelId}/deliver`,
     {
       method: "POST",
       ...(photoUrls && photoUrls.length > 0 ? { body: { photoUrls } } : {}),
-      headers: { "Idempotency-Key": newIdempotencyKey() },
     },
   );
+  return normalizeActionResponse(raw, parcelId);
 }
 
-// ===== QR kiện + crew endpoints (docs/Implements/API-Parcel-QR-Crew.md) =====
+// ===== Custody exception / scan / reconcile (§8) ========================
+// Ba route này mới có ở source/local, production chưa deploy — UI chỉ bật khi
+// manifest cho thấy backend đã ở contract mới (manifestHasCustodyContract).
 
-// Quét QR kiện: tra cứu kiện theo mã trong chuyến của assistant. Chỉ đọc,
-// không đổi trạng thái (dù là POST).
-export function scanParcelQr(
+// Loại sự cố custody. WRONG_STOP: đã dỡ nhầm bến. PACKAGE_IDENTITY_MISMATCH:
+// QR đúng nhưng kiện vật lý không khớp ảnh/cân nặng. UNSCANNED_HANDOFF: bàn
+// giao mà không quét được QR.
+export type ParcelIncidentType =
+  | "WRONG_STOP"
+  | "PACKAGE_IDENTITY_MISMATCH"
+  | "UNSCANNED_HANDOFF";
+
+export type ParcelCustodyLocationType =
+  | "ORIGIN_STATION"
+  | "ROUTE_STOP"
+  | "DESTINATION_STATION"
+  | "VEHICLE";
+
+export type CustodyExceptionInput = {
+  incidentType: ParcelIncidentType;
+  actualLocationType: ParcelCustodyLocationType;
+  // Bắt buộc trừ khi location là VEHICLE.
+  actualLocationId?: string | null;
+  locationSnapshot?: string | null;
+  temporaryExceptionTag?: string | null;
+  description?: string | null;
+  observedWeightKg?: number | null;
+  evidenceUrls?: string[];
+  // Bắt buộc, tối đa 1000 ký tự.
+  reason: string;
+  // Với actor role ASSISTANT backend BẮT BUỘC có phê duyệt của giám sát.
+  supervisorApprovalUserId?: string | null;
+};
+
+// Báo sự cố custody: mở incident SEARCHING, sinh 2 search task và đưa kiện
+// sang chờ điều hành xử lý. Dùng khi dỡ nhầm bến, kiện không khớp mô tả,
+// hoặc không đọc được QR (§10).
+export async function reportCustodyException(
+  parcelId: string,
+  input: CustodyExceptionInput,
+): Promise<AssistantParcelActionData> {
+  const raw = await apiRequest<unknown>(
+    `/v1/assistant/parcels/${parcelId}/custody-exception`,
+    { method: "POST", body: input },
+  );
+  return normalizeActionResponse(raw, parcelId);
+}
+
+// Direct scan chỉ nhận 4 event này (§8.2).
+export type ParcelCustodyScanEvent =
+  | "ACCEPTED"
+  | "ARRIVED_AT_STOP"
+  | "HANDOFF"
+  | "RETURNED_TO_STATION";
+
+export type CustodyScanInput = {
+  parcelCode: string;
+  eventType: ParcelCustodyScanEvent;
+  actualLocationType: ParcelCustodyLocationType;
+  actualLocationId?: string | null;
+  locationSnapshot?: string | null;
+  evidenceReferences?: string[];
+  reason?: string | null;
+};
+
+// Ghi nhận một lần quét custody (không đổi status kiện) để chuỗi theo dõi
+// không bị đứt — đây cũng là dữ liệu mà reconcile đối chiếu trước khi rời bến.
+export async function recordCustodyScan(
+  parcelId: string,
+  input: CustodyScanInput,
+): Promise<AssistantParcelActionData> {
+  const raw = await apiRequest<unknown>(
+    `/v1/assistant/parcels/${parcelId}/custody-scan`,
+    { method: "POST", body: input },
+  );
+  return normalizeActionResponse(raw, parcelId);
+}
+
+export type ReconcileStopInput = {
+  scannedParcelIds: string[];
+  manualExceptionParcelIds: string[];
+  // Chỉ dùng khi còn kiện chưa đối soát mà vẫn phải chạy tiếp; backend đòi có
+  // ĐỦ CẢ HAI (lý do + giám sát duyệt) mới trả canDepart=true.
+  departureOverrideReason?: string | null;
+  supervisorApprovalUserId?: string | null;
+};
+
+// Đối soát toàn bộ kiện của một điểm dừng trước khi xe rời đi. Kiện chưa đối
+// soát → backend mở incident UNSCANNED_HANDOFF. UI chỉ cho chốt điểm dừng
+// khi canDepart=true.
+export function reconcileStop(
   tripId: string,
-  parcelCode: string,
-): Promise<ScanParcelQrData> {
-  return apiRequest<ScanParcelQrData>(
-    `/v1/assistant/trips/${tripId}/parcels/qr-scan`,
-    {
-      method: "POST",
-      body: { parcelCode },
-    },
+  stopId: string,
+  input: ReconcileStopInput,
+): Promise<StopReconcileData> {
+  return apiRequest<StopReconcileData>(
+    `/v1/assistant/trips/${tripId}/stops/${stopId}/reconcile`,
+    { method: "POST", body: input },
   );
 }
+
+// ===== Crew (DRIVER + ASSISTANT) =======================================
 
 // Crew chuyến ĐÍCH xác nhận đã nhận kiện được operator chuyển sang
-// (PENDING_TRANSFER_CONFIRM). parcelCode để đối chiếu đúng kiện cầm trên tay.
+// (PENDING_TRANSFER_CONFIRM, cửa sổ xác nhận 30 phút). parcelCode để đối
+// chiếu đúng kiện cầm trên tay.
 export function confirmParcelTransfer(
   parcelId: string,
   parcelCode: string,
 ): Promise<ConfirmParcelTransferData> {
   return apiRequest<ConfirmParcelTransferData>(
     `/v1/crew/parcels/${parcelId}/confirm-transfer`,
-    {
-      method: "POST",
-      body: { parcelCode },
-      headers: { "Idempotency-Key": newIdempotencyKey() },
-    },
+    { method: "POST", body: { parcelCode } },
+  );
+}
+
+// Crew (driver + assistant) xác nhận giao thay người nhận khi khách không tự
+// confirm qua email. Kiện phải đang DELIVERED_PENDING_CONFIRM (sai → 400
+// PARCEL_NOT_PENDING_CONFIRM); sau khi confirm, token của khách bị revoke.
+// Body nhận cả alias `note`, nhưng `confirmNote` là tên canonical.
+export function confirmParcelDelivery(
+  parcelId: string,
+  note: string,
+): Promise<ManualConfirmParcelData> {
+  return apiRequest<ManualConfirmParcelData>(
+    `/v1/crew/parcels/${parcelId}/manual-confirm`,
+    { method: "POST", body: { confirmNote: note.trim() } },
   );
 }
 
@@ -200,9 +426,6 @@ export function resendDeliveryEmail(
 ): Promise<ResendDeliveryEmailData> {
   return apiRequest<ResendDeliveryEmailData>(
     `/v1/crew/parcels/${parcelId}/resend-delivery-email`,
-    {
-      method: "POST",
-      headers: { "Idempotency-Key": newIdempotencyKey() },
-    },
+    { method: "POST" },
   );
 }

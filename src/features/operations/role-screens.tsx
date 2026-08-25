@@ -30,11 +30,19 @@ import Animated, {
 } from "react-native-reanimated";
 
 import { ApiError } from "@/api/client";
-import type { ReweighParcelInput } from "@/api/parcel";
+import { manifestHasCustodyContract } from "@/api/parcel";
+import type {
+  ParcelCustodyLocationType,
+  ParcelIncidentType,
+  ParcelUnloadLocation,
+  ReweighParcelInput,
+} from "@/api/parcel";
 import { sendRagFeedback, streamRagChat } from "@/api/rag";
 import {
   INCIDENT_CATEGORIES,
   type AssistantParcelItem,
+  type ParcelLocationRef,
+  type StopReconcileData,
   type IncidentCategory,
   type BookingUpdatedEvent,
   type RagRating,
@@ -86,11 +94,18 @@ import {
     SurfaceCard,
 } from "@/features/operations/ui";
 import {
-  allowedParcelActions,
+  custodyEventLabel,
+  custodyLocationMismatch,
   formatVnd,
+  incidentStatusLabel,
+  incidentTypeLabel,
   isParcelCode,
+  locationLabel,
   parcelStatusMeta,
+  recommendedActionLabel,
+  resolveParcelActions,
   sizeCategoryLabel,
+  trackingConfidenceMeta,
 } from "@/features/parcels/parcel-format";
 import { TripRouteMap } from "@/features/routes/trip-route-map";
 import { useTripRouteGeometry } from "@/features/routes/use-route";
@@ -105,8 +120,11 @@ import {
   useCheckInParcel,
   useConfirmParcelDelivery,
   useConfirmParcelTransfer,
+  useCustodyException,
+  useCustodyScan,
   useDeliverParcel,
   useLoadParcel,
+  useReconcileStop,
   useResendDeliveryEmail,
   useReweighParcel,
   useScanParcelQr,
@@ -1438,13 +1456,34 @@ function ApiSeatGrid({
 
 export function AssistantCargoScreen() {
   const styles = useThemedStyles(makeStyles);
+  const theme = useTheme();
   // Phụ xe có thể chạy nhiều ca/ngày, và kiện của ca sau phải được check-in
   // TRƯỚC giờ khởi hành (khi ca khác có thể đang active) → chuyến thao tác lấy
   // từ bộ chọn dùng chung, không khóa cứng vào chuyến app tự đoán.
   const activeTrip = useSelectedTrip();
   const tripId = activeTrip.tripId;
   const parcelsQuery = useAssistantTripParcels(tripId);
-  const items = parcelsQuery.data?.items ?? [];
+  const manifest = parcelsQuery.data;
+  const items = manifest?.items ?? [];
+  // Backend đã bật contract custody v2 chưa (API-Parcel-Driver.md §1: production
+  // còn manifest cũ). Chưa bật thì ẩn hẳn nhóm custody/đối soát thay vì gọi API
+  // chưa deploy rồi bắt phụ xe đọc lỗi 404.
+  const custodyV2 = manifestHasCustodyContract(manifest);
+
+  // Vị trí vận hành hiện tại của xe — §7.4: chỉ được dỡ kiện khi xe ĐÃ tới
+  // điểm đó và CHƯA rời đi. Đây là nguồn truth, không tự suy từ status chuyến.
+  const operational = manifest?.tripContext?.currentOperationalLocation ?? null;
+  const stoppedHere =
+    operational?.status === "ARRIVED" && operational.departedAt == null;
+  const currentStopId =
+    stoppedHere && operational?.location?.type === "ROUTE_STOP"
+      ? operational.location.id
+      : null;
+  const atDestination =
+    stoppedHere && operational?.location?.type === "DESTINATION_STATION";
+  const destinationStationId =
+    manifest?.tripContext?.trip?.route?.destination?.id ??
+    (atDestination ? (operational?.location?.id ?? null) : null);
 
   // Quét QR dán trên kiện → tra cứu nhanh kiện thuộc chuyến đang chọn.
   const scanParcel = useScanParcelQr(tripId);
@@ -1452,8 +1491,8 @@ export function AssistantCargoScreen() {
   const handleParcelScanned = (raw: string) => {
     setParcelScannerOpen(false);
     const code = raw.trim();
-    // Lọc sớm theo format chính thức (API-Parcel_NEWST.md) — đỡ một vòng API
-    // và báo đúng bệnh khi quét nhầm QR vé của khách.
+    // Lọc sớm theo format chính thức (§6.2) — đỡ một vòng API và báo đúng bệnh
+    // khi quét nhầm QR vé của khách.
     if (!isParcelCode(code)) {
       Alert.alert(
         "Không phải mã kiện hàng",
@@ -1464,16 +1503,24 @@ export function AssistantCargoScreen() {
       return;
     }
     scanParcel.mutate(code, {
-      onSuccess: (data) => {
-        const meta = parcelStatusMeta(data.status);
-        Alert.alert(
-          `Kiện ${data.parcelCode ?? code}`,
-          [
-            `Trạng thái: ${meta.label}`,
-            `Người nhận: ${data.recipientName ?? "—"}`,
-            `Kích cỡ: ${sizeCategoryLabel(data.sizeCategory)}`,
-          ].join("\n"),
-        );
+      onSuccess: (action) => {
+        const state = action.parcelState;
+        const meta = parcelStatusMeta(state.status);
+        const lines = [
+          `Trạng thái: ${meta.label}`,
+          `Điểm trả: ${locationLabel(state.dropoffLocation)}`,
+        ];
+        if (action.currentCustody) {
+          lines.push(
+            `Ghi nhận cuối: ${custodyEventLabel(action.currentCustody.lastEventType)} tại ${locationLabel(action.currentCustody.lastConfirmedLocation)}`,
+          );
+        }
+        if (action.activeIncident) {
+          lines.push(
+            `⚠ Sự cố: ${incidentTypeLabel(action.activeIncident.type)} (${incidentStatusLabel(action.activeIncident.status)})`,
+          );
+        }
+        Alert.alert(`Kiện ${state.parcelCode ?? code}`, lines.join("\n"));
       },
       onError: (error) => {
         Alert.alert(
@@ -1484,13 +1531,22 @@ export function AssistantCargoScreen() {
     });
   };
 
-  // Đếm nhanh theo trạng thái cho phần tóm tắt.
-  const loadedCount = items.filter((parcel) =>
-    ["LOADED", "IN_TRANSIT"].includes(parcel.status),
-  ).length;
-  const toDeliverCount = items.filter((parcel) =>
-    ["UNLOADED", "DELIVERED_PENDING_CONFIRM"].includes(parcel.status),
-  ).length;
+  // §11: số liệu lấy từ `summary` do backend đếm trên toàn chuyến. Contract cũ
+  // không có summary thì mới tự đếm trên trang đang hiển thị.
+  const summary = manifest?.summary ?? null;
+  const totalCount = summary?.total ?? items.length;
+  const loadedCount =
+    summary?.loaded ??
+    items.filter((parcel) => ["LOADED", "IN_TRANSIT"].includes(parcel.status))
+      .length;
+  const toDeliverCount =
+    summary?.unloaded ??
+    items.filter((parcel) =>
+      ["UNLOADED", "DELIVERED_PENDING_CONFIRM"].includes(parcel.status),
+    ).length;
+  const exceptionCount =
+    summary?.exceptionCount ??
+    items.filter((parcel) => parcel.activeIncident != null).length;
 
   return (
     <OperationsScreen
@@ -1559,8 +1615,8 @@ export function AssistantCargoScreen() {
             <View style={styles.metricRow}>
               <MetricTile
                 icon="inventory-2"
-                value={String(items.length)}
-                hint="Tổng kiện"
+                value={String(totalCount)}
+                hint="Tổng"
                 tone="info"
                 compact
               />
@@ -1579,7 +1635,75 @@ export function AssistantCargoScreen() {
                 compact
               />
             </View>
+            {/* Sự cố là ngoại lệ: 0 thì không chiếm chỗ trong hàng metric (hàng
+                này chỉ vừa 3 ô), có thì hiện thành dải cảnh báo cho nổi. */}
+            {custodyV2 && exceptionCount > 0 ? (
+              <View
+                style={[
+                  styles.exceptionBanner,
+                  {
+                    backgroundColor: theme.tones.danger.background,
+                    borderColor: theme.tones.danger.border,
+                  },
+                ]}
+              >
+                <MaterialIcons
+                  name="report-problem"
+                  size={16}
+                  color={theme.tones.danger.text}
+                />
+                <Text
+                  style={[
+                    styles.exceptionBannerText,
+                    { color: theme.tones.danger.text },
+                  ]}
+                >
+                  {exceptionCount} kiện đang có sự cố, chờ điều hành xử lý.
+                </Text>
+              </View>
+            ) : null}
           </SurfaceCard>
+
+          {operational ? (
+            <SurfaceCard delay={90}>
+              <SectionTitle
+                icon="place"
+                title="Vị trí hiện tại của xe"
+                subtitle={
+                  stoppedHere
+                    ? "Đang dừng tại đây — được phép dỡ kiện trả ở điểm này."
+                    : "Xe chưa dừng ở điểm nào; chưa dỡ kiện được."
+                }
+              />
+              <View style={styles.metaStack}>
+                <View style={styles.metaRow}>
+                  <StatusChip
+                    label={locationLabel(operational.location)}
+                    tone={stoppedHere ? "success" : "neutral"}
+                  />
+                  {operational.arrivedAt ? (
+                    <Text style={[styles.metaText, styles.metaTextGrow]}>
+                      Tới lúc {formatTimeHM(operational.arrivedAt)}
+                    </Text>
+                  ) : null}
+                </View>
+                {summary && summary.expectedAtCurrentStop > 0 ? (
+                  <Text style={[styles.metaText, styles.metaTextGrow]}>
+                    Cần trả tại điểm này: {summary.expectedAtCurrentStop} kiện.
+                  </Text>
+                ) : null}
+              </View>
+            </SurfaceCard>
+          ) : null}
+
+          {custodyV2 && tripId && currentStopId ? (
+            <StopReconcileSection
+              tripId={tripId}
+              stopId={currentStopId}
+              stopName={locationLabel(operational?.location)}
+              items={items}
+            />
+          ) : null}
 
           <SurfaceCard delay={120}>
             <SectionTitle icon="inventory" title="Danh sách kiện" />
@@ -1589,6 +1713,11 @@ export function AssistantCargoScreen() {
                   key={parcel.parcelId}
                   parcel={parcel}
                   tripId={tripId}
+                  custodyV2={custodyV2}
+                  currentStopId={currentStopId}
+                  atDestination={Boolean(atDestination)}
+                  destinationStationId={destinationStationId}
+                  currentLocation={operational?.location ?? null}
                 />
               ))}
             </View>
@@ -1601,17 +1730,188 @@ export function AssistantCargoScreen() {
   );
 }
 
+// Đối soát kiện của điểm dừng hiện tại trước khi xe rời đi (§8.3). Kiện chưa
+// có custody event tại điểm này sẽ bị backend mở incident UNSCANNED_HANDOFF —
+// UI chỉ cho phép chốt điểm dừng khi canDepart=true.
+function StopReconcileSection({
+  tripId,
+  stopId,
+  stopName,
+  items,
+}: {
+  tripId: string;
+  stopId: string;
+  stopName: string;
+  items: AssistantParcelItem[];
+}) {
+  const styles = useThemedStyles(makeStyles);
+  const theme = useTheme();
+  const reconcile = useReconcileStop(tripId);
+  const [result, setResult] = useState<StopReconcileData | null>(null);
+  const [overrideReason, setOverrideReason] = useState("");
+  const [supervisorId, setSupervisorId] = useState("");
+
+  // Kiện thuộc điểm này và đã có lần ghi nhận custody TẠI ĐÚNG điểm này —
+  // backend từ chối ID nào chưa có custody event khớp (409
+  // PARCEL_CUSTODY_EVENT_NOT_FOUND) nên không khai bừa cả manifest.
+  const stopParcels = items.filter(
+    (parcel) =>
+      (parcel.dropoffStopId ?? parcel.dropoffLocation?.id ?? null) === stopId,
+  );
+  const scannedParcelIds = stopParcels
+    .filter(
+      (parcel) =>
+        parcel.activeIncident == null &&
+        parcel.currentCustody?.lastConfirmedLocation?.id === stopId,
+    )
+    .map((parcel) => parcel.parcelId);
+  const manualExceptionParcelIds = stopParcels
+    .filter((parcel) => parcel.activeIncident != null)
+    .map((parcel) => parcel.parcelId);
+
+  const unresolved = result?.unresolvedParcels ?? [];
+  const errorMessage = tripOpsErrorMessage(reconcile.error);
+  const overrideReady =
+    overrideReason.trim().length > 0 && supervisorId.trim().length > 0;
+
+  const run = (withOverride: boolean) => {
+    reconcile.mutate(
+      {
+        stopId,
+        input: {
+          scannedParcelIds,
+          manualExceptionParcelIds,
+          departureOverrideReason: withOverride ? overrideReason.trim() : null,
+          supervisorApprovalUserId: withOverride ? supervisorId.trim() : null,
+        },
+      },
+      { onSuccess: setResult },
+    );
+  };
+
+  return (
+    <SurfaceCard delay={100}>
+      <SectionTitle
+        icon="fact-check"
+        title="Đối soát trước khi rời điểm"
+        subtitle={`${stopName} • ${stopParcels.length} kiện cần trả tại đây`}
+      />
+      <View style={styles.metaStack}>
+        <Text style={[styles.metaText, styles.metaTextGrow]}>
+          Đối soát để chắc chắn không bỏ sót kiện nào tại điểm này. Kiện chưa
+          quét sẽ được mở phiếu tìm kiếm tự động.
+        </Text>
+        {errorMessage ? (
+          <Text style={styles.errorText}>{errorMessage}</Text>
+        ) : null}
+
+        {result ? (
+          <>
+            <View style={styles.metaRow}>
+              <StatusChip
+                label={result.canDepart ? "Đủ điều kiện rời điểm" : "Còn thiếu kiện"}
+                tone={result.canDepart ? "success" : "danger"}
+              />
+              <Text style={[styles.metaText, styles.metaTextGrow]}>
+                Đã quét {result.scannedCount}/{result.expectedCount}
+                {result.manualExceptionCount > 0
+                  ? ` • ${result.manualExceptionCount} kiện có sự cố`
+                  : ""}
+              </Text>
+            </View>
+            {unresolved.map((parcel) => (
+              <View key={parcel.parcelId} style={[styles.metaRow, styles.metaRowTop]}>
+                <MaterialIcons
+                  name="error-outline"
+                  size={15}
+                  color={theme.danger}
+                  style={styles.metaIconTop}
+                />
+                <Text style={[styles.metaText, styles.metaTextGrow]}>
+                  {parcel.parcelCode ?? parcel.parcelId} —{" "}
+                  {incidentTypeLabel(parcel.incidentType)}.{" "}
+                  {recommendedActionLabel(parcel.recommendedAction)}
+                </Text>
+              </View>
+            ))}
+            {!result.canDepart ? (
+              <>
+                <Text style={styles.parcelHint}>
+                  Vẫn phải chạy tiếp thì cần lý do và mã giám sát duyệt — cả hai
+                  đều bắt buộc, thiếu một cái backend vẫn chặn.
+                </Text>
+                <TextInput
+                  placeholder="Lý do rời điểm khi còn thiếu kiện"
+                  placeholderTextColor={theme.placeholder}
+                  style={styles.weighInput}
+                  value={overrideReason}
+                  onChangeText={setOverrideReason}
+                />
+                <TextInput
+                  placeholder="Mã người giám sát duyệt (UUID)"
+                  placeholderTextColor={theme.placeholder}
+                  autoCapitalize="none"
+                  style={styles.weighInput}
+                  value={supervisorId}
+                  onChangeText={setSupervisorId}
+                />
+                <ActionButton
+                  icon="verified-user"
+                  label={
+                    reconcile.isPending ? "Đang gửi…" : "Đối soát kèm phê duyệt"
+                  }
+                  tone="secondary"
+                  small
+                  disabled={reconcile.isPending || !overrideReady}
+                  onPress={() => run(true)}
+                />
+              </>
+            ) : null}
+          </>
+        ) : null}
+
+        <ActionButton
+          icon="fact-check"
+          label={
+            reconcile.isPending
+              ? "Đang đối soát…"
+              : result
+                ? "Đối soát lại"
+                : "Đối soát điểm dừng"
+          }
+          tone="primary"
+          small
+          disabled={reconcile.isPending}
+          onPress={() => run(false)}
+        />
+      </View>
+    </SurfaceCard>
+  );
+}
+
 function ParcelCard({
   parcel,
   tripId,
+  custodyV2,
+  currentStopId,
+  atDestination,
+  destinationStationId,
+  currentLocation,
 }: {
   parcel: AssistantParcelItem;
   tripId: string;
+  // Backend đã trả contract custody v2 (availableActions/custody/incident).
+  custodyV2: boolean;
+  currentStopId: string | null;
+  atDestination: boolean;
+  destinationStationId: string | null;
+  currentLocation: ParcelLocationRef | null;
 }) {
   const styles = useThemedStyles(makeStyles);
   const theme = useTheme();
   const statusMeta = parcelStatusMeta(parcel.status);
-  const actions = allowedParcelActions(parcel.status);
+  // §11: KHÔNG tự suy thao tác từ status khi backend đã trả availableActions.
+  const actions = resolveParcelActions(parcel);
 
   const checkIn = useCheckInParcel(tripId);
   const reweigh = useReweighParcel(tripId);
@@ -1621,18 +1921,31 @@ function ParcelCard({
   const confirmDelivery = useConfirmParcelDelivery(tripId);
   const confirmTransfer = useConfirmParcelTransfer(tripId);
   const resendEmail = useResendDeliveryEmail(tripId);
+  const custodyScan = useCustodyScan(tripId);
+  const custodyException = useCustodyException(tripId);
 
-  // Panel đang mở: cân lại / xác nhận giao / không.
-  const [mode, setMode] = useState<"none" | "reweigh" | "confirm">("none");
+  // Panel đang mở: cân lại / xác nhận giao / báo sự cố / không.
+  const [mode, setMode] = useState<"none" | "reweigh" | "confirm" | "exception">(
+    "none",
+  );
   const [len, setLen] = useState("");
   const [wid, setWid] = useState("");
   const [hei, setHei] = useState("");
   const [wgt, setWgt] = useState("");
   const [note, setNote] = useState("");
 
-  // Ảnh bằng chứng (uri cục bộ, tối đa 3) đính kèm bước check-in/deliver.
-  // Optional — không ảnh vẫn thao tác được. Chỉ ASSISTANT upload được
-  // (Storage Rules), màn này vốn là màn assistant.
+  // Form báo sự cố custody (§8.1).
+  const [incidentType, setIncidentType] =
+    useState<ParcelIncidentType>("WRONG_STOP");
+  const [exceptionReason, setExceptionReason] = useState("");
+  const [exceptionNote, setExceptionNote] = useState("");
+  const [supervisorId, setSupervisorId] = useState("");
+
+  // Quét QR bắt buộc trước khi dỡ/ghi nhận custody (§10: không có nút bỏ qua).
+  const [scanFor, setScanFor] = useState<"unload" | "custody-scan" | null>(null);
+
+  // Ảnh bằng chứng (uri cục bộ, tối đa 3) đính kèm check-in/deliver/sự cố.
+  // Chỉ ASSISTANT upload được (Storage Rules), màn này vốn là màn assistant.
   const [evidenceUris, setEvidenceUris] = useState<string[]>([]);
   const [evidenceCameraOpen, setEvidenceCameraOpen] = useState(false);
   const [uploadingEvidence, setUploadingEvidence] = useState(false);
@@ -1650,7 +1963,9 @@ function ParcelCard({
     deliver.isPending ||
     confirmDelivery.isPending ||
     confirmTransfer.isPending ||
-    resendEmail.isPending;
+    resendEmail.isPending ||
+    custodyScan.isPending ||
+    custodyException.isPending;
 
   const errorMessage = firstErrorMessage(
     checkIn.error,
@@ -1661,7 +1976,28 @@ function ParcelCard({
     confirmDelivery.error,
     confirmTransfer.error,
     resendEmail.error,
+    custodyScan.error,
+    custodyException.error,
   );
+  // 409 sai bến mang kèm expected/actual/requiredAction — hiển thị nguyên vẹn
+  // thay vì chỉ một câu chung (§10).
+  const mismatch = custodyLocationMismatch(unload.error);
+
+  // Điểm trả kỳ vọng của kiện: stop dọc đường, hoặc bến cuối nếu không gắn stop.
+  const expectedStopId = parcel.dropoffStopId ?? parcel.dropoffLocation?.id ?? null;
+  const unloadLocation: ParcelUnloadLocation | null = expectedStopId
+    ? { kind: "ROUTE_STOP", id: expectedStopId }
+    : destinationStationId
+      ? { kind: "DESTINATION_STATION", id: destinationStationId }
+      : null;
+  // §10 bước 3: chỉ bật nút dỡ khi điểm trả của kiện trùng vị trí xe đang dừng.
+  const unloadHere = !custodyV2
+    ? true
+    : unloadLocation?.kind === "ROUTE_STOP"
+      ? unloadLocation.id === currentStopId
+      : unloadLocation?.kind === "DESTINATION_STATION"
+        ? atDestination
+        : false;
 
   const submitReweigh = () => {
     const input: ReweighParcelInput = {
@@ -1683,9 +2019,78 @@ function ParcelCard({
     );
   };
 
-  // Check-in/deliver kèm ảnh: upload trước (nếu có), lỗi upload thì dừng —
-  // không gửi thao tác thiếu ảnh mà phụ xe tưởng đã đính kèm.
-  const submitWithEvidence = (kind: "check-in" | "delivery") => {
+  // Loại custody event suy từ vị trí xe đang đứng (§8.2 chỉ nhận 4 loại).
+  const custodyEventForHere = () => {
+    switch (currentLocation?.type) {
+      case "ORIGIN_STATION":
+        return "ACCEPTED" as const;
+      case "DESTINATION_STATION":
+        return "RETURNED_TO_STATION" as const;
+      default:
+        return "ARRIVED_AT_STOP" as const;
+    }
+  };
+
+  // QR quét xong: đối chiếu ngay với mã của card. Không khớp thì DỪNG, không
+  // tự đi tìm parcel khác (§10: giữ hàng, mở phần đối chiếu nhận dạng).
+  const handleScanned = (raw: string) => {
+    const target = scanFor;
+    setScanFor(null);
+    const code = raw.trim();
+    if (code !== parcel.parcelCode) {
+      Alert.alert(
+        "Mã QR không khớp kiện này",
+        `Tem vừa quét là ${code}, còn card đang mở là ${parcel.parcelCode}. Giữ hàng lại và đối chiếu ảnh/mô tả trước khi thao tác tiếp.`,
+      );
+      return;
+    }
+
+    if (target === "unload") {
+      if (!unloadLocation) {
+        Alert.alert(
+          "Chưa xác định được điểm trả",
+          "Kiện không gắn điểm dừng và chuyến chưa có bến cuối trong dữ liệu. Tải lại danh sách rồi thử lại.",
+        );
+        return;
+      }
+      unload.mutate({
+        parcelId: parcel.parcelId,
+        input: {
+          parcelCode: parcel.parcelCode,
+          actualLocation: unloadLocation,
+          photoUrls: [],
+        },
+      });
+      return;
+    }
+
+    if (target === "custody-scan") {
+      if (!currentLocation?.type) {
+        Alert.alert(
+          "Chưa biết xe đang ở đâu",
+          "Chưa có vị trí vận hành của chuyến nên không ghi nhận được lần quét này.",
+        );
+        return;
+      }
+      custodyScan.mutate({
+        parcelId: parcel.parcelId,
+        input: {
+          parcelCode: parcel.parcelCode,
+          eventType: custodyEventForHere(),
+          actualLocationType:
+            currentLocation.type as ParcelCustodyLocationType,
+          actualLocationId: currentLocation.id,
+          locationSnapshot: currentLocation.name,
+          evidenceReferences: [],
+          reason: null,
+        },
+      });
+    }
+  };
+
+  // Check-in/deliver/sự cố kèm ảnh: upload trước (nếu có), lỗi upload thì dừng
+  // — không gửi thao tác thiếu ảnh mà phụ xe tưởng đã đính kèm.
+  const submitWithEvidence = (kind: "check-in" | "delivery" | "custody") => {
     const run = async () => {
       let photoUrls: string[] | undefined;
 
@@ -1724,10 +2129,37 @@ function ParcelCard({
           },
           { onSuccess: clearPhotos },
         );
-      } else {
+      } else if (kind === "delivery") {
         deliver.mutate(
           { parcelId: parcel.parcelId, photoUrls },
           { onSuccess: clearPhotos },
+        );
+      } else {
+        custodyException.mutate(
+          {
+            parcelId: parcel.parcelId,
+            input: {
+              incidentType,
+              // Vị trí THỰC TẾ của kiện lúc phát hiện sự cố = chỗ xe đang đứng;
+              // chưa biết thì coi như kiện còn trên xe.
+              actualLocationType: (currentLocation?.type ??
+                "VEHICLE") as ParcelCustodyLocationType,
+              actualLocationId: currentLocation?.id ?? null,
+              locationSnapshot: currentLocation?.name ?? null,
+              description: exceptionNote.trim() || null,
+              evidenceUrls: photoUrls ?? [],
+              reason: exceptionReason.trim(),
+              supervisorApprovalUserId: supervisorId.trim() || null,
+            },
+          },
+          {
+            onSuccess: () => {
+              clearPhotos();
+              setMode("none");
+              setExceptionReason("");
+              setExceptionNote("");
+            },
+          },
         );
       }
     };
@@ -1735,18 +2167,48 @@ function ParcelCard({
     void run();
   };
 
+  const hints = parcel.identityCheckHints;
+  const custody = parcel.currentCustody;
+  const incident = parcel.activeIncident;
+  const confidence = trackingConfidenceMeta(custody?.trackingConfidence);
+  const identityPhoto = hints?.photoUrl ?? parcel.photoUrl;
+  const description = hints?.description ?? parcel.description;
+
   return (
     <View style={styles.parcelCard}>
-      <View style={styles.parcelHeader}>
-        <View style={styles.parcelTitleStack}>
-          <Text style={styles.parcelCode}>{parcel.parcelCode}</Text>
-          <Text style={styles.parcelPeople}>
+      <View style={styles.parcelTitleStack}>
+        {/* Mã kiện chiếm trọn một dòng: 24 ký tự mono mà bị chip chen ngang
+            thì gãy đôi, phụ xe dễ đọc nhầm khi đối chiếu tem. */}
+        <Text style={styles.parcelCode} numberOfLines={1}>
+          {parcel.parcelCode}
+        </Text>
+        <View style={styles.parcelHeader}>
+          <Text style={[styles.parcelPeople, styles.metaTextGrow]}>
             {parcel.recipientName ?? "—"}
             {parcel.recipientPhone ? ` • ${parcel.recipientPhone}` : ""}
           </Text>
+          <StatusChip label={statusMeta.label} tone={statusMeta.tone} />
         </View>
-        <StatusChip label={statusMeta.label} tone={statusMeta.tone} />
       </View>
+
+      {/* Sự cố đang mở: kiện đang do điều hành xử lý, không thao tác bừa. */}
+      {incident ? (
+        <View style={[styles.metaRow, styles.metaRowTop]}>
+          <MaterialIcons
+            name="report-problem"
+            size={15}
+            color={theme.danger}
+            style={styles.metaIconTop}
+          />
+          <Text style={[styles.errorText, styles.metaTextGrow]}>
+            {incidentTypeLabel(incident.type)} •{" "}
+            {incidentStatusLabel(incident.status)}
+            {incident.searchDeadline
+              ? ` • hạn tìm ${formatTimeHM(incident.searchDeadline)}`
+              : ""}
+          </Text>
+        </View>
+      ) : null}
 
       <View style={styles.metaStack}>
         <View style={styles.metaRow}>
@@ -1763,13 +2225,57 @@ function ParcelCard({
                 : ""}
           </Text>
         </View>
+
+        {/* Điểm trả do backend tính sẵn — không suy từ dropoffStopId nữa. */}
+        {parcel.dropoffLocation ? (
+          <View style={styles.metaRow}>
+            <MaterialIcons name="place" size={15} color={theme.textSecondary} />
+            <Text style={[styles.metaText, styles.metaTextGrow]}>
+              Trả tại {locationLabel(parcel.dropoffLocation)}
+              {parcel.dropoffLocation.eta
+                ? ` • dự kiến ${formatTimeHM(parcel.dropoffLocation.eta)}`
+                : ""}
+            </Text>
+          </View>
+        ) : null}
+
+        {/* Custody: nơi kiện được ghi nhận lần cuối và mức tin cậy. */}
+        {custody ? (
+          <View style={styles.metaRow}>
+            <MaterialIcons
+              name="history"
+              size={15}
+              color={theme.textSecondary}
+            />
+            <Text style={[styles.metaText, styles.metaTextGrow]}>
+              {custodyEventLabel(custody.lastEventType)} tại{" "}
+              {locationLabel(custody.lastConfirmedLocation)}
+              {custody.lastConfirmedAt
+                ? ` • ${formatTimeHM(custody.lastConfirmedAt)}`
+                : ""}
+            </Text>
+            <StatusChip label={confidence.label} tone={confidence.tone} />
+          </View>
+        ) : null}
+        {custody?.hasTrackingGap ? (
+          <Text style={styles.parcelHint}>
+            Chuỗi theo dõi bị đứt một đoạn. Quét lại QR để ghi nhận vị trí trước
+            khi dỡ hoặc giao.
+          </Text>
+        ) : null}
+
         {parcel.status === "PENDING_FINAL_PAYMENT" ? (
           <View style={styles.metaRow}>
             <MaterialIcons name="payments" size={15} color={theme.textSecondary} />
             <Text style={[styles.metaText, styles.metaTextGrow]}>
               Khách còn thiếu{" "}
               {formatVnd(
-                (parcel.balanceRequiredVnd ?? 0) - (parcel.balancePaidVnd ?? 0),
+                (parcel.paymentState?.balanceRequiredVnd ??
+                  parcel.balanceRequiredVnd ??
+                  0) -
+                  (parcel.paymentState?.balancePaidVnd ??
+                    parcel.balancePaidVnd ??
+                    0),
               )}
               {parcel.finalPaymentDeadline
                 ? ` • hạn ${formatTimeHM(parcel.finalPaymentDeadline)}`
@@ -1777,7 +2283,7 @@ function ParcelCard({
             </Text>
           </View>
         ) : null}
-        {parcel.description ? (
+        {description ? (
           // Mô tả từ backend có thể nhiều dòng → icon neo theo dòng đầu,
           // text co giãn để xuống dòng thay vì tràn khỏi card.
           <View style={[styles.metaRow, styles.metaRowTop]}>
@@ -1788,7 +2294,36 @@ function ParcelCard({
               style={styles.metaIconTop}
             />
             <Text style={[styles.metaText, styles.metaTextGrow]}>
-              {parcel.description}
+              {description}
+            </Text>
+          </View>
+        ) : null}
+
+        {/* §11: bắt buộc cho phụ xe đối chiếu kiện vật lý trước khi xếp/dỡ. */}
+        {hints &&
+        (actions.includes("load") ||
+          actions.includes("unload") ||
+          actions.includes("deliver")) ? (
+          <View style={styles.evidenceRow}>
+            {identityPhoto ? (
+              <Image
+                source={{ uri: identityPhoto }}
+                style={styles.evidenceThumb}
+              />
+            ) : null}
+            <Text style={[styles.metaText, styles.metaTextGrow]}>
+              Đối chiếu:{" "}
+              {hints.expectedWeightKg != null
+                ? `nặng ~${hints.expectedWeightKg}kg`
+                : "chưa có cân ước tính"}
+              {hints.actualWeightKg != null
+                ? ` (đã cân ${hints.actualWeightKg}kg)`
+                : ""}
+              {hints.expectedLengthCm != null &&
+              hints.expectedWidthCm != null &&
+              hints.expectedHeightCm != null
+                ? ` • ${hints.expectedLengthCm}×${hints.expectedWidthCm}×${hints.expectedHeightCm}cm`
+                : ""}
             </Text>
           </View>
         ) : null}
@@ -1796,6 +2331,13 @@ function ParcelCard({
 
       {errorMessage ? (
         <Text style={styles.parcelHint}>{errorMessage}</Text>
+      ) : null}
+      {mismatch ? (
+        <Text style={styles.errorText}>
+          Điểm trả đúng của kiện: {mismatch.expectedStop ?? "—"}. Điểm vừa thao
+          tác: {mismatch.actualStop ?? "—"}.{" "}
+          {recommendedActionLabel(mismatch.requiredAction)}
+        </Text>
       ) : null}
 
       {mode === "reweigh" ? (
@@ -1883,6 +2425,112 @@ function ParcelCard({
             />
           </View>
         </View>
+      ) : mode === "exception" ? (
+        // §8.1: báo sự cố custody. Với role ASSISTANT backend BẮT BUỘC có mã
+        // giám sát duyệt, nên form chặn gửi khi còn trống.
+        <View style={styles.weighStack}>
+          <Text style={styles.fieldLabel}>Loại sự cố</Text>
+          <View style={styles.segmentRow}>
+            {(
+              [
+                ["WRONG_STOP", "Dỡ nhầm điểm"],
+                ["PACKAGE_IDENTITY_MISMATCH", "Kiện không khớp"],
+                ["UNSCANNED_HANDOFF", "Không quét được QR"],
+              ] as [ParcelIncidentType, string][]
+            ).map(([value, label]) => (
+              <ActionButton
+                key={value}
+                label={label}
+                tone={incidentType === value ? "primary" : "ghost"}
+                small
+                disabled={busy}
+                onPress={() => setIncidentType(value)}
+              />
+            ))}
+          </View>
+          <TextInput
+            placeholder="Lý do (bắt buộc)"
+            placeholderTextColor={theme.placeholder}
+            style={styles.weighInput}
+            value={exceptionReason}
+            onChangeText={setExceptionReason}
+          />
+          <TextInput
+            placeholder="Mô tả thêm (tuỳ chọn)"
+            placeholderTextColor={theme.placeholder}
+            style={styles.weighInput}
+            value={exceptionNote}
+            onChangeText={setExceptionNote}
+          />
+          <TextInput
+            placeholder="Mã người giám sát duyệt (UUID)"
+            placeholderTextColor={theme.placeholder}
+            autoCapitalize="none"
+            style={styles.weighInput}
+            value={supervisorId}
+            onChangeText={setSupervisorId}
+          />
+          <View style={styles.evidenceRow}>
+            {evidenceUris.map((uri) => (
+              <Pressable
+                key={uri}
+                accessibilityRole="button"
+                onPress={() =>
+                  setEvidenceUris((current) =>
+                    current.filter((item) => item !== uri),
+                  )
+                }
+              >
+                <Image source={{ uri }} style={styles.evidenceThumb} />
+              </Pressable>
+            ))}
+            <View style={styles.evidenceButtonWrap}>
+              <ActionButton
+                icon="photo-camera"
+                label={`Ảnh hiện trường (${evidenceUris.length}/${MAX_EVIDENCE_PHOTOS})`}
+                tone="ghost"
+                small
+                disabled={
+                  busy ||
+                  uploadingEvidence ||
+                  evidenceUris.length >= MAX_EVIDENCE_PHOTOS
+                }
+                onPress={() => setEvidenceCameraOpen(true)}
+              />
+            </View>
+          </View>
+          <Text style={styles.parcelHint}>
+            Gửi xong kiện sẽ chuyển sang chờ điều hành xử lý và hệ thống tự mở
+            phiếu tìm kiếm. Không gửi trùng nếu kiện đã có sự cố đang mở.
+          </Text>
+          <View style={styles.segmentRow}>
+            <ActionButton
+              label={
+                uploadingEvidence
+                  ? "Đang tải ảnh…"
+                  : custodyException.isPending
+                    ? "Đang gửi…"
+                    : "Gửi báo sự cố"
+              }
+              tone="primary"
+              small
+              disabled={
+                busy ||
+                uploadingEvidence ||
+                exceptionReason.trim().length === 0 ||
+                supervisorId.trim().length === 0
+              }
+              onPress={() => submitWithEvidence("custody")}
+            />
+            <ActionButton
+              label="Hủy"
+              tone="ghost"
+              small
+              disabled={busy}
+              onPress={() => setMode("none")}
+            />
+          </View>
+        </View>
       ) : (
         <View style={styles.parcelActionStack}>
           {actions.includes("check-in") || actions.includes("deliver") ? (
@@ -1921,23 +2569,6 @@ function ParcelCard({
               {evidenceUris.length > 0 ? (
                 <Text style={styles.parcelHint}>Chạm vào ảnh để xoá.</Text>
               ) : null}
-              <EvidenceCameraModal
-                visible={evidenceCameraOpen}
-                title={`Chụp ảnh bằng chứng • ${parcel.parcelCode}`}
-                onCaptured={(uri) => {
-                  setEvidenceUris((current) => {
-                    if (current.length >= MAX_EVIDENCE_PHOTOS) {
-                      return current;
-                    }
-                    const next = [...current, uri];
-                    if (next.length >= MAX_EVIDENCE_PHOTOS) {
-                      setEvidenceCameraOpen(false);
-                    }
-                    return next;
-                  });
-                }}
-                onClose={() => setEvidenceCameraOpen(false)}
-              />
             </>
           ) : null}
           {actions.includes("check-in") ? (
@@ -1984,12 +2615,31 @@ function ParcelCard({
           {actions.includes("unload") ? (
             <ActionButton
               icon="file-download"
-              label={unload.isPending ? "Đang dỡ…" : "Dỡ kiện"}
+              label={
+                unload.isPending
+                  ? "Đang dỡ…"
+                  : custodyV2
+                    ? "Quét QR và dỡ kiện"
+                    : "Dỡ kiện"
+              }
               tone="primary"
               small
-              disabled={busy}
-              onPress={() => unload.mutate(parcel.parcelId)}
+              disabled={busy || (custodyV2 && !unloadHere)}
+              onPress={() => {
+                // Contract cũ chưa nhận body → gọi như trước.
+                if (!custodyV2) {
+                  unload.mutate({ parcelId: parcel.parcelId });
+                  return;
+                }
+                setScanFor("unload");
+              }}
             />
+          ) : null}
+          {actions.includes("unload") && custodyV2 && !unloadHere ? (
+            <Text style={styles.parcelHint}>
+              Kiện này trả tại {locationLabel(parcel.dropoffLocation)}, chưa
+              phải chỗ xe đang dừng. Giữ kiện trên xe.
+            </Text>
           ) : null}
           {actions.includes("deliver") ? (
             <ActionButton
@@ -2055,6 +2705,28 @@ function ParcelCard({
               }
             />
           ) : null}
+          {actions.includes("custody-scan") ? (
+            <ActionButton
+              icon="qr-code-scanner"
+              label={
+                custodyScan.isPending ? "Đang ghi nhận…" : "Quét ghi nhận vị trí"
+              }
+              tone="secondary"
+              small
+              disabled={busy}
+              onPress={() => setScanFor("custody-scan")}
+            />
+          ) : null}
+          {actions.includes("custody-exception") ? (
+            <ActionButton
+              icon="report-problem"
+              label="Báo sự cố kiện"
+              tone="ghost"
+              small
+              disabled={busy}
+              onPress={() => setMode("exception")}
+            />
+          ) : null}
           {actions.length === 0 ? (
             <Text style={styles.parcelHint}>
               Không có thao tác cho trạng thái hiện tại.
@@ -2062,6 +2734,32 @@ function ParcelCard({
           ) : null}
         </View>
       )}
+
+      {/* Camera và scanner dùng chung cho mọi panel của card. */}
+      <EvidenceCameraModal
+        visible={evidenceCameraOpen}
+        title={`Chụp ảnh bằng chứng • ${parcel.parcelCode}`}
+        onCaptured={(uri) => {
+          setEvidenceUris((current) => {
+            if (current.length >= MAX_EVIDENCE_PHOTOS) {
+              return current;
+            }
+            const next = [...current, uri];
+            if (next.length >= MAX_EVIDENCE_PHOTOS) {
+              setEvidenceCameraOpen(false);
+            }
+            return next;
+          });
+        }}
+        onClose={() => setEvidenceCameraOpen(false)}
+      />
+      <QrScannerModal
+        visible={scanFor != null}
+        title={`Quét QR • ${parcel.parcelCode}`}
+        hint="Quét đúng tem trên kiện đang cầm trên tay."
+        onScanned={handleScanned}
+        onClose={() => setScanFor(null)}
+      />
     </View>
   );
 }
@@ -3457,6 +4155,21 @@ const makeStyles = (c: Palette) =>
     flexDirection: "row",
     justifyContent: "space-between",
     gap: Spacing.two,
+  },
+  exceptionBanner: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    marginTop: Spacing.two,
+    borderRadius: 16,
+    borderWidth: 1,
+    paddingHorizontal: Spacing.two,
+    paddingVertical: 10,
+  },
+  exceptionBannerText: {
+    flex: 1,
+    fontSize: 13,
+    lineHeight: 18,
   },
   metricRow: {
     flexDirection: "row",

@@ -58,6 +58,24 @@ const MESSAGES: Record<string, string> = {
   PARCEL_DELIVERY_REJECTED_WINDOW_EXPIRED:
     "Người nhận đã từ chối kiện này, không gửi lại email xác nhận được nữa.",
   DROP_OFF_STOP_NOT_FOUND: "Không tìm thấy điểm trả của kiện trong chuyến.",
+  // ===== Custody v2 (docs/Implements/API-Parcel-Driver.md §7.4, §8) =====
+  // Dỡ sai bến: backend KHÔNG đổi trạng thái, kiện vẫn tính là trên xe. UI
+  // đọc thêm error.fields để chỉ ra bến đúng và hành động bắt buộc.
+  PARCEL_CUSTODY_LOCATION_MISMATCH:
+    "Kiện này không trả tại điểm hiện tại. Giữ kiện trên xe; nếu đã lỡ dỡ xuống thì báo sự cố.",
+  PARCEL_CUSTODY_LOCATION_REQUIRED:
+    "Thiếu vị trí thực tế của kiện. Chọn đúng điểm dừng rồi thử lại.",
+  PARCEL_SCAN_REQUIRED:
+    "Phải quét QR trên kiện trước khi dỡ. Không đọc được mã thì báo sự cố.",
+  SCAN_IDENTITY_MISMATCH:
+    "Mã QR vừa quét không khớp kiện đang thao tác. Giữ hàng lại và đối chiếu tem.",
+  PARCEL_INCIDENT_ALREADY_OPEN:
+    "Kiện này đã có sự cố đang mở. Chờ điều hành xử lý, không báo thêm.",
+  PARCEL_CUSTODY_EVENT_NOT_FOUND:
+    "Kiện chưa có lần quét nào tại điểm này nên chưa đối soát được.",
+  STOP_NOT_FOUND: "Không tìm thấy điểm dừng này trong chuyến.",
+  OPERATOR_SUSPENDED:
+    "Tài khoản nhà xe đang bị tạm ngưng. Liên hệ điều hành để mở lại.",
   DROP_OFF_STOP_NOT_ALLOWED: "Điểm dừng này không cho phép trả kiện.",
   // Còn lại của Parcel service (API-Parcel.md §Errors, API-Parcel_NEWST.md) mà
   // crew có thể chạm tới khi nhận/xếp/giao kiện.
