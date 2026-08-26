@@ -178,12 +178,26 @@ function splitEtaBatch(etas: TripTargetEta[] | undefined): {
   return { byStopId, station };
 }
 
-// Dòng mô tả ETA realtime: "Còn X phút • đến HH:MM", thêm "(ước tính)" khi
-// estimateQuality=FALLBACK (không có dữ liệu giao thông — vẫn hợp lệ để hiển
-// thị). Timestamp lấy nguyên từ server, KHÔNG tự cộng Date.now() + etaMinutes.
+// Nhãn chất lượng ETA. TRAFFIC_AWARE là mức tốt nhất nên không cần chú thích.
+// Giá trị lạ (enum mới của BE) rơi vào default → không chú thích gì, tuyệt đối
+// không ẩn ETA hay crash.
+function etaQualityNote(quality: string | undefined): string {
+  switch (quality) {
+    case "ROUTE_BASED":
+      return " (ước tính theo tuyến đường)";
+    case "FALLBACK":
+      return " (ước tính)";
+    default:
+      return "";
+  }
+}
+
+// Dòng mô tả ETA realtime: "Còn X phút • đến HH:MM", thêm chú thích chất lượng
+// khi estimateQuality không phải TRAFFIC_AWARE (vẫn hợp lệ để hiển thị).
+// Timestamp lấy nguyên từ server, KHÔNG tự cộng Date.now() + etaMinutes.
 function liveEtaLine(eta: TripTargetEta): string {
   const base = `Còn ${eta.etaMinutes} phút • đến ${formatTimeHM(eta.estimatedArrivalTime)}`;
-  return eta.estimateQuality === "FALLBACK" ? `${base} (ước tính)` : base;
+  return `${base}${etaQualityNote(eta.estimateQuality)}`;
 }
 
 // Câu thông báo cho banner booking:updated. BOOKING_CREATED trả null vì đã có

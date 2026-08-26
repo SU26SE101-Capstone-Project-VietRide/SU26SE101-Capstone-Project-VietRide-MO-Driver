@@ -107,6 +107,9 @@ export type TripStop = {
   // SKIPPED đều null. Khai báo string để không vỡ nếu backend thêm giá trị mới.
   status: TripStopStatus | string;
   actualArrivalTime: string | null;
+  // Chất lượng planned ETA của riêng stop này (FE-MOBILE-DAY51-ETA-RESPONSE.md).
+  // Optional vì payload cũ chưa có field; giá trị lạ vẫn hiển thị bình thường.
+  plannedEtaQuality?: EstimateQuality | string;
 };
 
 export type TripDetails = {
@@ -136,8 +139,9 @@ export type TripDetails = {
     stops: { stopId: string; fareFromThisStop: number }[];
   };
   // Chất lượng planned ETA của cả Trip (API-stop-arrival-time-estimates.md):
-  // TRAFFIC_AWARE = Google Routes có dữ liệu giao thông; FALLBACK = baseline
-  // của Route. FALLBACK vẫn là ETA hợp lệ, chỉ kém chính xác hơn.
+  // TRAFFIC_AWARE = Google Routes có dữ liệu giao thông; ROUTE_BASED = tính theo
+  // tuyến đường; FALLBACK = baseline của Route. Cả ba vẫn là ETA hợp lệ, chỉ kém
+  // chính xác dần.
   plannedEtaQuality?: EstimateQuality | string;
 };
 
@@ -763,9 +767,11 @@ export type TripEtaData = {
 
 // ===== ETA batch theo target (API-stop-arrival-time-estimates.md) =====
 
-// Chất lượng ước tính: TRAFFIC_AWARE khi cả batch Google thành công, FALLBACK
-// khi dùng route projection/tốc độ hiện tại. FALLBACK vẫn hiển thị bình thường.
-export type EstimateQuality = "TRAFFIC_AWARE" | "FALLBACK";
+// Chất lượng ước tính: TRAFFIC_AWARE khi cả batch Google thành công,
+// ROUTE_BASED khi tính theo hình học tuyến đường (không có dữ liệu giao thông),
+// FALLBACK khi dùng route projection/tốc độ hiện tại. Cả ba đều là ETA hợp lệ và
+// vẫn hiển thị bình thường, chỉ khác mức độ chính xác.
+export type EstimateQuality = "TRAFFIC_AWARE" | "ROUTE_BASED" | "FALLBACK";
 
 // Field chung của mọi ETA item. stopName/sequence optional theo schema tương
 // thích rolling deploy; estimateQuality khai kèm | string theo convention repo.
