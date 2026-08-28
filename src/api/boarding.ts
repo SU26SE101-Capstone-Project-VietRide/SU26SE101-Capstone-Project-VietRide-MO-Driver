@@ -60,11 +60,16 @@ export async function scanQr(
     // thuộc field còn lại. Log để còn lần ra qua logcat nếu schema đổi tiếp.
     console.warn(
       `[boarding] qr-scan từ chối field ${Object.keys(first)[0]} cho mã ${code}, thử lại với ${Object.keys(second)[0]}`,
+      JSON.stringify((error as ApiError).fields),
     );
 
     try {
       return await postQrScan(tripId, second);
     } catch (retryError) {
+      console.warn(
+        `[boarding] qr-scan cũng từ chối field ${Object.keys(second)[0]}`,
+        JSON.stringify((retryError as ApiError).fields),
+      );
       // Cả hai field đều validation fail → mã thật sự sai định dạng; trả lỗi
       // của lần đoán đầu cho khớp với thứ crew vừa nhập/quét.
       throw isValidationError(retryError) ? error : retryError;

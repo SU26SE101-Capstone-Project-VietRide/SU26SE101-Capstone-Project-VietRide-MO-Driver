@@ -10,7 +10,7 @@ import {
 } from "react-native";
 
 import { ApiError } from "@/api/client";
-import type { ShuttleManifestStop } from "@/api/types";
+import type { GeoPoint, ShuttleManifestStop } from "@/api/types";
 import { EmptyCard, ErrorCard, LoadingCard } from "@/components/query-state";
 import { Fonts, Spacing, type Palette } from "@/constants/theme";
 import {
@@ -21,6 +21,10 @@ import {
   StatusChip,
   SurfaceCard,
 } from "@/features/operations/ui";
+import {
+  encodeWaypointsParam,
+  isValidPoint,
+} from "@/features/routes/waypoints";
 import { useGpsBroadcast } from "@/features/tracking/use-gps-broadcast";
 import { formatTimeHM } from "@/features/trips/trip-format";
 import { useThemedStyles } from "@/hooks/use-theme";
@@ -86,11 +90,47 @@ export function ShuttleManifestScreen() {
     ).length ?? 0;
   const canComplete = manifest?.status === "IN_PROGRESS" && pendingCount === 0;
 
-  const openDirections = (stop: ShuttleManifestStop) => {
-    void Linking.openURL(
-      `https://www.google.com/maps/dir/?api=1&destination=${stop.pickupLatitude},${stop.pickupLongitude}`,
-    );
+  // Dẫn đường bằng màn turn-by-turn Mapbox trong app, không bung sang Google
+  // Maps ngoài app nữa. Chỉ truyền waypoint — SDK tự tính đường giữa các điểm,
+  // backend không trả geometry cho shuttle (API-Tracking.md, Phase 11).
+  const openDirections = (points: GeoPoint[]) => {
+    const valid = points.filter(isValidPoint);
+    if (valid.length === 0) {
+      Alert.alert("Thiếu toạ độ", "Chưa có điểm nào đủ toạ độ để dẫn đường.");
+      return;
+    }
+    router.push({
+      pathname: "/turn-by-turn",
+      params: { points: encodeWaypointsParam(valid) },
+    });
   };
+
+  const stopPoint = (stop: ShuttleManifestStop): GeoPoint => ({
+    latitude: stop.pickupLatitude,
+    longitude: stop.pickupLongitude,
+  });
+
+  // Cả chuyến: các điểm CHƯA xử lý xong theo đúng pickupOrder backend chốt.
+  // Chiều INBOUND thì chặng cuối là về bến; OUTBOUND xuất phát từ bến nên
+  // không nối bến vào đuôi.
+  const wholeTripPoints = ((): GeoPoint[] => {
+    if (!manifest) {
+      return [];
+    }
+    const points = manifest.stops
+      .filter((stop) => !RESOLVED_STOP_STATUSES.has(stop.status))
+      .slice()
+      .sort((a, b) => a.pickupOrder - b.pickupOrder)
+      .map(stopPoint);
+
+    if (manifest.direction === "INBOUND_TO_STATION") {
+      points.push({
+        latitude: manifest.stationLatitude,
+        longitude: manifest.stationLongitude,
+      });
+    }
+    return points.filter(isValidPoint);
+  })();
 
   const callPassenger = (stop: ShuttleManifestStop) => {
     void Linking.openURL(`tel:${stop.passengerPhone}`);
@@ -187,6 +227,19 @@ export function ShuttleManifestScreen() {
                 onPress={() => lifecycle.start.mutate()}
               />
             ) : null}
+            {/* Dẫn liền mạch qua các điểm chưa xử lý theo thứ tự backend chốt. */}
+            <ActionButton
+              icon="navigation"
+              tone="secondary"
+              label="Dẫn cả chuyến"
+              disabled={wholeTripPoints.length === 0}
+              onPress={() => openDirections(wholeTripPoints)}
+            />
+            {wholeTripPoints.length === 0 ? (
+              <Text style={styles.helperText}>
+                Không còn điểm nào cần dẫn đường.
+              </Text>
+            ) : null}
             {manifest.status === "IN_PROGRESS" ? (
               <>
                 <ActionButton
@@ -240,7 +293,7 @@ export function ShuttleManifestScreen() {
                     tone="secondary"
                     icon="directions"
                     label="Chỉ đường"
-                    onPress={() => openDirections(stop)}
+                    onPress={() => openDirections([stopPoint(stop)])}
                   />
                 </View>
 

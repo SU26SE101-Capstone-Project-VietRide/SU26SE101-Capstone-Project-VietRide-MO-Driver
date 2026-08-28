@@ -33,6 +33,7 @@ import { ApiError } from "@/api/client";
 import { manifestHasCustodyContract } from "@/api/parcel";
 import type {
   ParcelCustodyLocationType,
+  ParcelCustodyScanEvent,
   ParcelIncidentType,
   ParcelUnloadLocation,
   ReweighParcelInput,
@@ -41,6 +42,7 @@ import { sendRagFeedback, streamRagChat } from "@/api/rag";
 import {
   INCIDENT_CATEGORIES,
   type AssistantParcelItem,
+  type CustodyExceptionApproval,
   type ParcelLocationRef,
   type StopReconcileData,
   type IncidentCategory,
@@ -58,6 +60,8 @@ import { QrScannerModal } from "@/features/boarding/qr-scanner";
 import {
     groupManifestByBooking,
     isBoardedStatus,
+    type BookingGroup,
+    useBoardPassengers,
     useManifest,
     useQrScanMutation,
 } from "@/features/boarding/use-boarding";
@@ -94,6 +98,7 @@ import {
     SurfaceCard,
 } from "@/features/operations/ui";
 import {
+  custodyApprovalStatusLabel,
   custodyEventLabel,
   custodyLocationMismatch,
   formatVnd,
@@ -1052,6 +1057,7 @@ export function AssistantBoardingScreen() {
   const manifestQuery = useManifest(tripId);
   const seatMapQuery = useSeatMap(tripId);
   const qrScan = useQrScanMutation(tripId);
+  const boardSeats = useBoardPassengers(tripId);
   const [codeDraft, setCodeDraft] = useState("");
   const [scanResult, setScanResult] = useState<ScanResult | null>(null);
   const [scannerOpen, setScannerOpen] = useState(false);
@@ -1124,10 +1130,51 @@ export function AssistantBoardingScreen() {
     return map;
   }, [items]);
 
+  // Xác nhận lên xe cho một booking bằng passengerRecordId có sẵn trong
+  // manifest. Đây là đường đi ĐÚNG cho nút trên danh sách: qr-scan chỉ dùng khi
+  // thật sự có mã quét được, còn validator `bookingCode` của backend đang từ
+  // chối cả mã do chính nó sinh (BE-GAPS.md §5).
+  const handleBoardGroup = (group: BookingGroup) => {
+    if (boardSeats.isPending || group.pendingRecordIds.length === 0) {
+      return;
+    }
+
+    setScanResult(null);
+    boardSeats.mutate(group.pendingRecordIds, {
+      onSuccess: () => {
+        setScanResult({
+          kind: "success",
+          text: `Đã xác nhận lên xe ${group.bookingCode} • ghế ${group.seats.join(", ")}.`,
+        });
+      },
+      onError: (error) => {
+        setScanResult({
+          kind: "empty",
+          text:
+            tripOpsErrorMessage(error) ??
+            `Không xác nhận được ${group.bookingCode}. Thử lại.`,
+        });
+      },
+    });
+  };
+
   const handleCheckIn = (bookingCode: string) => {
     const code = bookingCode.trim();
 
     if (!code || qrScan.isPending) {
+      return;
+    }
+
+    // Mã nhập tay/quét mà đã có trong manifest thì boarding trực tiếp — khỏi
+    // đưa qua qr-scan rồi dính 422 vì format.
+    const matched = groups.find(
+      (group) =>
+        group.bookingCode.toUpperCase() === code.toUpperCase() &&
+        group.pendingRecordIds.length > 0,
+    );
+    if (matched) {
+      setCodeDraft("");
+      handleBoardGroup(matched);
       return;
     }
 
@@ -1340,11 +1387,18 @@ export function AssistantBoardingScreen() {
                           </Text>
                         </View>
                         <ActionButton
-                          label="Xác nhận lên xe"
+                          label={
+                            boardSeats.isPending
+                              ? "Đang xác nhận…"
+                              : "Xác nhận lên xe"
+                          }
                           tone="primary"
                           small
-                          disabled={qrScan.isPending}
-                          onPress={() => handleCheckIn(group.bookingCode)}
+                          disabled={
+                            boardSeats.isPending ||
+                            group.pendingRecordIds.length === 0
+                          }
+                          onPress={() => handleBoardGroup(group)}
                         />
                       </View>
                     ))}
@@ -1498,6 +1552,11 @@ export function AssistantCargoScreen() {
   const destinationStationId =
     manifest?.tripContext?.trip?.route?.destination?.id ??
     (atDestination ? (operational?.location?.id ?? null) : null);
+  // Bến đầu của chuyến. Guide §2.2 + §7: bến đầu KHÔNG lấy từ
+  // currentOperationalLocation (backend cố tình trả null khi chuyến chưa tới
+  // route stop nào) mà lấy từ route.origin — đây là nguồn duy nhất để ghi nhận
+  // custody tại bến đầu.
+  const originLocation = manifest?.tripContext?.trip?.route?.origin ?? null;
 
   // Quét QR dán trên kiện → tra cứu nhanh kiện thuộc chuyến đang chọn.
   const scanParcel = useScanParcelQr(tripId);
@@ -1732,6 +1791,7 @@ export function AssistantCargoScreen() {
                   atDestination={Boolean(atDestination)}
                   destinationStationId={destinationStationId}
                   currentLocation={operational?.location ?? null}
+                  originLocation={originLocation}
                 />
               ))}
             </View>
@@ -1911,6 +1971,7 @@ function ParcelCard({
   atDestination,
   destinationStationId,
   currentLocation,
+  originLocation,
 }: {
   parcel: AssistantParcelItem;
   tripId: string;
@@ -1920,6 +1981,8 @@ function ParcelCard({
   atDestination: boolean;
   destinationStationId: string | null;
   currentLocation: ParcelLocationRef | null;
+  // Bến đầu từ route.origin — dùng khi chuyến chưa có vị trí vận hành (§7).
+  originLocation: ParcelLocationRef | null;
 }) {
   const styles = useThemedStyles(makeStyles);
   const theme = useTheme();
@@ -1953,7 +2016,10 @@ function ParcelCard({
     useState<ParcelIncidentType>("WRONG_STOP");
   const [exceptionReason, setExceptionReason] = useState("");
   const [exceptionNote, setExceptionNote] = useState("");
-  const [supervisorId, setSupervisorId] = useState("");
+  // Báo cáo sự cố vừa gửi, đang chờ Driver/điều hành duyệt. Giữ ở đây để card
+  // hiển thị đúng "chờ duyệt" ngay cả khi manifest chưa kịp phản ánh incident.
+  const [pendingApproval, setPendingApproval] =
+    useState<CustodyExceptionApproval | null>(null);
 
   // Quét QR bắt buộc trước khi dỡ/ghi nhận custody (§10: không có nút bỏ qua).
   const [scanFor, setScanFor] = useState<"unload" | "custody-scan" | null>(null);
@@ -2033,16 +2099,37 @@ function ParcelCard({
     );
   };
 
-  // Loại custody event suy từ vị trí xe đang đứng (§8.2 chỉ nhận 4 loại).
-  const custodyEventForHere = () => {
-    switch (currentLocation?.type) {
-      case "ORIGIN_STATION":
-        return "ACCEPTED" as const;
-      case "DESTINATION_STATION":
-        return "RETURNED_TO_STATION" as const;
-      default:
-        return "ARRIVED_AT_STOP" as const;
+  // Vị trí + loại custody event cho lần quét tại đây (§8.2 chỉ nhận 4 loại
+  // event). Nguồn vị trí theo guide §7: có vị trí vận hành thì dùng nó, KHÔNG
+  // có (chuyến còn SCHEDULED/BOARDING, hoặc xe đang chạy giữa hai stop) thì rơi
+  // về bến đầu route.origin — `currentOperationalLocation` null là hợp lệ, tuyệt
+  // đối không lấy đó làm lý do chặn phụ xe quét.
+  // Trả null chỉ khi thiếu locationId, vì §6.5 bắt buộc actualLocationId cho
+  // mọi location type trừ VEHICLE — gửi thiếu là ăn 422.
+  const custodyScanTarget = (): {
+    eventType: ParcelCustodyScanEvent;
+    locationType: ParcelCustodyLocationType;
+    locationId: string;
+    snapshot: string | null;
+  } | null => {
+    const source = currentLocation?.type ? currentLocation : originLocation;
+    if (!source?.type || !source.id) {
+      return null;
     }
+
+    const eventType: ParcelCustodyScanEvent =
+      source.type === "ORIGIN_STATION"
+        ? "ACCEPTED"
+        : source.type === "DESTINATION_STATION"
+          ? "RETURNED_TO_STATION"
+          : "ARRIVED_AT_STOP";
+
+    return {
+      eventType,
+      locationType: source.type as ParcelCustodyLocationType,
+      locationId: source.id,
+      snapshot: source.name,
+    };
   };
 
   // QR quét xong: đối chiếu ngay với mã của card. Không khớp thì DỪNG, không
@@ -2079,10 +2166,11 @@ function ParcelCard({
     }
 
     if (target === "custody-scan") {
-      if (!currentLocation?.type) {
+      const here = custodyScanTarget();
+      if (!here) {
         Alert.alert(
-          "Chưa biết xe đang ở đâu",
-          "Chưa có vị trí vận hành của chuyến nên không ghi nhận được lần quét này.",
+          "Chưa xác định được vị trí ghi nhận",
+          "Chuyến chưa có vị trí vận hành và dữ liệu bến đầu cũng thiếu mã điểm. Tải lại danh sách rồi thử lại.",
         );
         return;
       }
@@ -2090,11 +2178,10 @@ function ParcelCard({
         parcelId: parcel.parcelId,
         input: {
           parcelCode: parcel.parcelCode,
-          eventType: custodyEventForHere(),
-          actualLocationType:
-            currentLocation.type as ParcelCustodyLocationType,
-          actualLocationId: currentLocation.id,
-          locationSnapshot: currentLocation.name,
+          eventType: here.eventType,
+          actualLocationType: here.locationType,
+          actualLocationId: here.locationId,
+          locationSnapshot: here.snapshot,
           evidenceReferences: [],
           reason: null,
         },
@@ -2154,24 +2241,40 @@ function ParcelCard({
             parcelId: parcel.parcelId,
             input: {
               incidentType,
-              // Vị trí THỰC TẾ của kiện lúc phát hiện sự cố = chỗ xe đang đứng;
-              // chưa biết thì coi như kiện còn trên xe.
-              actualLocationType: (currentLocation?.type ??
-                "VEHICLE") as ParcelCustodyLocationType,
-              actualLocationId: currentLocation?.id ?? null,
-              locationSnapshot: currentLocation?.name ?? null,
+              // Vị trí THỰC TẾ của kiện lúc phát hiện sự cố = chỗ xe đang đứng,
+              // hoặc bến đầu nếu chuyến chưa chạy. Không có mã điểm hợp lệ thì
+              // khai VEHICLE (§6.5: chỉ VEHICLE được để id null) — coi như kiện
+              // còn trên xe, thay vì gửi id null cho một loại bến rồi ăn 422.
+              ...(() => {
+                const at = custodyScanTarget();
+                return at
+                  ? {
+                      actualLocationType: at.locationType,
+                      actualLocationId: at.locationId,
+                      locationSnapshot: at.snapshot,
+                    }
+                  : {
+                      actualLocationType: "VEHICLE" as ParcelCustodyLocationType,
+                      actualLocationId: null,
+                      locationSnapshot: currentLocation?.name ?? null,
+                    };
+              })(),
               description: exceptionNote.trim() || null,
               evidenceUrls: photoUrls ?? [],
+              // KHÔNG gửi supervisorApprovalUserId/reviewerUserId: backend lấy
+              // người báo cáo từ JWT của phụ xe (§6.6).
               reason: exceptionReason.trim(),
-              supervisorApprovalUserId: supervisorId.trim() || null,
             },
           },
           {
-            onSuccess: () => {
+            onSuccess: (approval) => {
               clearPhotos();
               setMode("none");
               setExceptionReason("");
               setExceptionNote("");
+              // Backend mới chỉ tạo báo cáo chờ duyệt; card chuyển sang trạng
+              // thái chờ và khóa nút gửi lại cùng sự cố.
+              setPendingApproval(approval);
             },
           },
         );
@@ -2184,6 +2287,10 @@ function ParcelCard({
   const hints = parcel.identityCheckHints;
   const custody = parcel.currentCustody;
   const incident = parcel.activeIncident;
+  // Chỉ coi là "đang chờ" khi chính response nói vậy — replay idempotent có
+  // thể trả về báo cáo đã được duyệt/từ chối, khi đó card phải đi theo
+  // response chứ không giữ trạng thái chờ cũ (§16).
+  const awaitingApproval = pendingApproval?.status === "PENDING_APPROVAL";
   const confidence = trackingConfidenceMeta(custody?.trackingConfidence);
   const identityPhoto = hints?.photoUrl ?? parcel.photoUrl;
   const description = hints?.description ?? parcel.description;
@@ -2219,6 +2326,30 @@ function ParcelCard({
             {incidentStatusLabel(incident.status)}
             {incident.searchDeadline
               ? ` • hạn tìm ${formatTimeHM(incident.searchDeadline)}`
+              : ""}
+          </Text>
+        </View>
+      ) : null}
+
+      {/* Báo cáo sự cố vừa gửi: chờ tài xế/điều hành duyệt. Chưa duyệt thì
+          backend chưa ghi custody event và chưa mở SLA tìm kiếm, nên tuyệt
+          đối không hiển thị "đang tìm kiếm" hay hạn tìm ở bước này (§6.6). */}
+      {pendingApproval ? (
+        <View style={[styles.metaRow, styles.metaRowTop]}>
+          <MaterialIcons
+            name={awaitingApproval ? "hourglass-top" : "verified"}
+            size={15}
+            color={awaitingApproval ? theme.textSecondary : theme.danger}
+            style={styles.metaIconTop}
+          />
+          <Text style={[styles.metaText, styles.metaTextGrow]}>
+            {incidentTypeLabel(pendingApproval.incidentType)} •{" "}
+            {custodyApprovalStatusLabel(pendingApproval.status)}
+            {awaitingApproval
+              ? " • đã gửi cho tài xế/điều hành, chưa mở tìm kiếm"
+              : ""}
+            {pendingApproval.reviewNote
+              ? ` • ghi chú: ${pendingApproval.reviewNote}`
               : ""}
           </Text>
         </View>
@@ -2440,8 +2571,8 @@ function ParcelCard({
           </View>
         </View>
       ) : mode === "exception" ? (
-        // §8.1: báo sự cố custody. Với role ASSISTANT backend BẮT BUỘC có mã
-        // giám sát duyệt, nên form chặn gửi khi còn trống.
+        // §6.6: báo sự cố custody. Phụ xe chỉ TẠO báo cáo chờ duyệt — không
+        // chọn người duyệt, không tự mở tìm kiếm.
         <View style={styles.weighStack}>
           <Text style={styles.fieldLabel}>Loại sự cố</Text>
           <View style={styles.segmentRow}>
@@ -2476,14 +2607,6 @@ function ParcelCard({
             value={exceptionNote}
             onChangeText={setExceptionNote}
           />
-          <TextInput
-            placeholder="Mã người giám sát duyệt (UUID)"
-            placeholderTextColor={theme.placeholder}
-            autoCapitalize="none"
-            style={styles.weighInput}
-            value={supervisorId}
-            onChangeText={setSupervisorId}
-          />
           <View style={styles.evidenceRow}>
             {evidenceUris.map((uri) => (
               <Pressable
@@ -2514,8 +2637,9 @@ function ParcelCard({
             </View>
           </View>
           <Text style={styles.parcelHint}>
-            Gửi xong kiện sẽ chuyển sang chờ điều hành xử lý và hệ thống tự mở
-            phiếu tìm kiếm. Không gửi trùng nếu kiện đã có sự cố đang mở.
+            Gửi xong báo cáo sẽ chờ tài xế hoặc điều hành phê duyệt. Chỉ khi
+            được duyệt hệ thống mới mở phiếu tìm kiếm. Không gửi trùng nếu kiện
+            đã có sự cố đang mở.
           </Text>
           <View style={styles.segmentRow}>
             <ActionButton
@@ -2531,8 +2655,7 @@ function ParcelCard({
               disabled={
                 busy ||
                 uploadingEvidence ||
-                exceptionReason.trim().length === 0 ||
-                supervisorId.trim().length === 0
+                exceptionReason.trim().length === 0
               }
               onPress={() => submitWithEvidence("custody")}
             />
@@ -2619,8 +2742,12 @@ function ParcelCard({
           {actions.includes("reweigh") ? (
             <ActionButton
               icon="scale"
-              label="Cân lại"
-              tone="secondary"
+              // Guide §12: kiện CHECKED_IN thì cân/đo là CTA CHÍNH, không phải
+              // custody scan — nên nhấn primary để phụ xe không bấm nhầm nút.
+              label={
+                parcel.status === "CHECKED_IN" ? "Cân/đo thực tế" : "Cân lại"
+              }
+              tone={parcel.status === "CHECKED_IN" ? "primary" : "secondary"}
               small
               disabled={busy}
               onPress={() => setMode("reweigh")}
@@ -2734,10 +2861,14 @@ function ParcelCard({
           {actions.includes("custody-exception") ? (
             <ActionButton
               icon="report-problem"
-              label="Báo sự cố kiện"
+              label={
+                awaitingApproval ? "Đã gửi, chờ duyệt" : "Báo sự cố kiện"
+              }
               tone="ghost"
               small
-              disabled={busy}
+              // Đã gửi báo cáo mà chưa có kết quả duyệt thì không cho gửi lại
+              // cùng một sự cố (§6.6).
+              disabled={busy || awaitingApproval}
               onPress={() => setMode("exception")}
             />
           ) : null}

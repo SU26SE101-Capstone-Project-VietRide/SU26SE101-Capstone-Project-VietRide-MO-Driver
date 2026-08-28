@@ -172,10 +172,18 @@ export type SeatMapData = {
 
 // ===== Booking / Boarding =====
 
+// Manifest trả sẵn passengerRecordId/ticketCode (xác minh trên máy thật
+// 2026-08-28) — nhờ đó nút "Xác nhận lên xe" gọi thẳng boardPassenger, KHÔNG
+// phải đi qua qr-scan (validator bookingCode của backend đang từ chối cả mã do
+// chính nó sinh ra, xem BE-GAPS.md §5).
 export type ManifestItem = {
+  passengerRecordId: string;
+  ticketId?: string | null;
+  ticketCode?: string | null;
   seatNumber: string;
   bookingCode: string;
-  pickupStop: string;
+  // Backend trả null khi vé đón tại bến đầu.
+  pickupStop: string | null;
   boardingStatus: string;
 };
 
@@ -523,8 +531,9 @@ export type ParcelStateSnapshot = {
   identityCheckHints: ParcelIdentityHints | null;
 };
 
-// Shape chung của qr-scan, check-in, load, unload, deliver, custody-scan,
-// custody-exception (§5.1). FE merge thẳng vào card, không refetch từng kiện.
+// Shape chung của qr-scan, check-in, load, unload, deliver, custody-scan
+// (§5.1). FE merge thẳng vào card, không refetch từng kiện. Riêng
+// custody-exception KHÔNG còn dùng shape này — xem CustodyExceptionApproval.
 export type AssistantParcelActionData = {
   parcelState: ParcelStateSnapshot;
   currentCustody: ParcelCustodyState | null;
@@ -532,6 +541,46 @@ export type AssistantParcelActionData = {
   createdCustodyEvent: ParcelCustodyEvent | null;
   availableActions: string[] | null;
   warning: string | null;
+};
+
+// ===== Custody exception: báo cáo -> chờ duyệt =========================
+// (FE-Driver-Assistant-Parcel-Integration-Guide (1).md §6.6–6.9, contract BE
+// c6306059 ngày 2026-08-28.) Assistant chỉ TẠO báo cáo `PENDING_APPROVAL`;
+// Driver được phân công (hoặc Operator Web) mới approve/reject. Trong lúc chờ
+// duyệt backend chưa ghi custody event, chưa mở SLA tìm kiếm và
+// `searchDeadline` là null — FE không được hiển thị "đang tìm kiếm" hay tự
+// tính hạn tìm.
+export type CustodyExceptionApprovalStatus =
+  | "PENDING_APPROVAL"
+  | "APPROVED"
+  | "REJECTED"
+  | "CANCELLED";
+
+export type CustodyExceptionApproval = {
+  requestId: string;
+  parcelId: string;
+  incidentId: string;
+  incidentType: string;
+  incidentStatus: string;
+  status: CustodyExceptionApprovalStatus;
+  actualLocationType: string;
+  actualLocationId: string | null;
+  locationSnapshot: string | null;
+  temporaryExceptionTag: string | null;
+  description: string | null;
+  observedWeightKg: number | null;
+  evidenceReferences: string[];
+  reason: string;
+  reportedByUserId: string;
+  reportedByRole: string;
+  reportedAt: string;
+  reviewedByUserId: string | null;
+  reviewedAt: string | null;
+  reviewedByRole: string | null;
+  reviewNote: string | null;
+  approvedCustodyEventId: string | null;
+  searchDeadline: string | null;
+  availableActions: string[];
 };
 
 // Điểm dừng theo thứ tự chạy, kèm mốc thực tế để biết đã tới/rời chưa.

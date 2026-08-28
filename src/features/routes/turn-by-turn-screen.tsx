@@ -1,7 +1,7 @@
 import { MaterialIcons } from "@expo/vector-icons";
 import { MapboxNavigationView } from "@badatgil/expo-mapbox-navigation";
 import * as Location from "expo-location";
-import { useRouter } from "expo-router";
+import { useLocalSearchParams, useRouter } from "expo-router";
 import { useEffect, useMemo, useState } from "react";
 import {
     ActivityIndicator,
@@ -20,21 +20,16 @@ import { useTripDetails } from "@/features/trips/use-trips";
 import { useTheme, useThemedStyles } from "@/hooks/use-theme";
 
 import { useTripRouteGeometry } from "./use-route";
-
-// Toạ độ hợp lệ mới đưa vào danh sách dẫn đường.
-function isValidPoint(point: GeoPoint): boolean {
-  return (
-    Number.isFinite(point.latitude) &&
-    Number.isFinite(point.longitude) &&
-    Math.abs(point.latitude) <= 90 &&
-    Math.abs(point.longitude) <= 180
-  );
-}
+import { isValidPoint, parseWaypointsParam } from "./waypoints";
 
 // Màn dẫn đường turn-by-turn TRONG APP (Mức 3 — thử nghiệm Mapbox Navigation
 // SDK, free tier 100 MAU + 1.000 chuyến/tháng). Điểm đầu là VỊ TRÍ HIỆN TẠI
 // của xe, đi qua các điểm dừng CHƯA QUA rồi tới bến đích — bám đúng lộ trình
 // nhà xe thay vì để engine tự chọn đường ngắn nhất bỏ qua điểm dừng.
+//
+// Chế độ WAYPOINT RỜI: truyền param `points` ("lat,lng;lat,lng;…", ví dụ các
+// điểm đón của chuyến trung chuyển theo pickupOrder) thì bỏ qua chuyến đang
+// chọn, dẫn từ vị trí hiện tại qua đúng thứ tự các điểm đó.
 export function TurnByTurnScreen() {
   const router = useRouter();
   const theme = useTheme();
@@ -43,8 +38,15 @@ export function TurnByTurnScreen() {
   // Theo theme trong app (Cài đặt), không theo theme hệ điều hành.
   const { mode } = useThemeMode();
 
+  const params = useLocalSearchParams<{ points?: string }>();
+  // Giữ nguyên chuỗi param làm dependency của useMemo (mảng parse ra là object
+  // mới mỗi render nên không dùng để so sánh được).
+  const pointsParam = typeof params.points === "string" ? params.points : null;
+  const hasWaypointsParam = pointsParam != null;
+
   const activeTrip = useSelectedTrip();
-  const tripId = activeTrip.trip?.tripId ?? null;
+  // Chế độ waypoint rời không cần dữ liệu chuyến — tắt hẳn hai query bên dưới.
+  const tripId = hasWaypointsParam ? null : (activeTrip.trip?.tripId ?? null);
   const routeQuery = useTripRouteGeometry(tripId);
   const detailsQuery = useTripDetails(tripId);
 
@@ -93,6 +95,12 @@ export function TurnByTurnScreen() {
   // theo sequence) → bến đích. Stop đã ARRIVED/SKIPPED bị loại để không dẫn
   // vòng lại điểm cũ.
   const coordinates = useMemo(() => {
+    // Waypoint rời: vị trí hiện tại → các điểm truyền vào, đúng thứ tự.
+    if (pointsParam != null) {
+      const waypoints = parseWaypointsParam(pointsParam);
+      return origin && waypoints ? [origin, ...waypoints] : null;
+    }
+
     const r = routeQuery.data;
     const dest = r?.destinationStation;
     if (!origin || !dest || !isValidPoint(dest)) {
@@ -118,7 +126,12 @@ export function TurnByTurnScreen() {
       })),
       { latitude: dest.latitude, longitude: dest.longitude },
     ];
-  }, [origin, routeQuery.data, detailsQuery.data]);
+  }, [
+    origin,
+    routeQuery.data,
+    detailsQuery.data,
+    pointsParam,
+  ]);
 
   const loading =
     routeQuery.isLoading ||
@@ -142,7 +155,9 @@ export function TurnByTurnScreen() {
       ) : !coordinates ? (
         <View style={styles.center}>
           <Text style={styles.message}>
-            Chuyến chưa có toạ độ bến đích để dẫn đường.
+            {hasWaypointsParam
+              ? "Điểm đến chưa có toạ độ hợp lệ để dẫn đường."
+              : "Chuyến chưa có toạ độ bến đích để dẫn đường."}
           </Text>
         </View>
       ) : (

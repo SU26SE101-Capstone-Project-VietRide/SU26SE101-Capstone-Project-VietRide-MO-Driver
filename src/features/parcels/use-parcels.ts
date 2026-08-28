@@ -210,13 +210,15 @@ export function useCustodyScan(tripId: string | null) {
 }
 
 // Báo sự cố custody (dỡ nhầm bến, kiện không khớp, không quét được QR).
-// Mở incident SEARCHING và đưa kiện sang chờ điều hành xử lý.
+// Contract 2026-08-28: chỉ TẠO báo cáo chờ Driver/điều hành duyệt — chưa có
+// custody event, chưa mở tìm kiếm. Response không phải action shape nên không
+// merge được vào card; chỉ tải lại manifest để card lấy incident mới nếu có.
 export function useCustodyException(tripId: string | null) {
-  const apply = useApplyAction(tripId);
+  const invalidate = useInvalidateParcels(tripId);
   return useMutation({
     mutationFn: (vars: { parcelId: string; input: CustodyExceptionInput }) =>
       reportCustodyException(vars.parcelId, vars.input),
-    onSuccess: apply,
+    onSuccess: invalidate,
   });
 }
 

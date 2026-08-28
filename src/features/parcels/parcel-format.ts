@@ -11,6 +11,17 @@ export function isParcelCode(code: string): boolean {
   return PARCEL_CODE_PATTERN.test(code.trim());
 }
 
+// Enum lạ (backend thêm giá trị mới) không được lòi ra UI vì đây là app tiếng
+// Việt — chỉ log ở dev để còn phát hiện mà bổ sung label, còn người dùng luôn
+// thấy một câu tiếng Việt.
+function unknownEnum(kind: string, value: string | null | undefined): void {
+  if (__DEV__ && value != null && value !== "") {
+    console.warn(
+      `[parcel-format] chưa có label tiếng Việt cho ${kind}: ${value}`,
+    );
+  }
+}
+
 // Backend trả status parcel dạng string (22 giá trị, Settlement v2) → map
 // defensive, có fallback.
 export function parcelStatusMeta(status: string | null | undefined): {
@@ -63,7 +74,8 @@ export function parcelStatusMeta(status: string | null | undefined): {
     case "EXPIRED":
       return { label: "Hết hạn", tone: "neutral" };
     default:
-      return { label: status ?? "Không rõ", tone: "neutral" };
+      unknownEnum("parcel status", status);
+      return { label: "Không rõ trạng thái", tone: "neutral" };
   }
 }
 
@@ -180,6 +192,16 @@ export function resolveParcelActions(parcel: {
       actions.push(mapped);
     }
   }
+
+  // WORKAROUND gap backend (FE-Driver-Assistant-Parcel-Integration-Guide.md §9
+  // và §13.1): resolver của backend quên `REWEIGH` cho kiện `CHECKED_IN`, chỉ
+  // trả `CUSTODY_SCAN`. Nếu bám nguyên availableActions thì card mất hẳn bước
+  // cân/đo — phụ xe không đi tiếp được tới READY_TO_LOAD.
+  // XOÁ khối này ngay khi backend sửa resolver.
+  if (parcel.status === "CHECKED_IN" && !actions.includes("reweigh")) {
+    actions.push("reweigh");
+  }
+
   return actions;
 }
 
@@ -208,7 +230,8 @@ export function locationLabel(
     case "VEHICLE":
       return "Trên xe";
     default:
-      return location.type ?? "—";
+      unknownEnum("location type", location.type);
+      return "Vị trí khác";
   }
 }
 
@@ -217,6 +240,9 @@ export function custodyEventLabel(eventType: string | null | undefined): string 
   switch (eventType) {
     case "ACCEPTED":
       return "Đã nhận kiện";
+    // Backend append event này khi check-in tại bến (RESERVED -> CHECKED_IN).
+    case "CHECKED_IN":
+      return "Đã nhận tại bến";
     case "LOADED":
       return "Đã lên xe";
     case "ARRIVED_AT_STOP":
@@ -234,7 +260,8 @@ export function custodyEventLabel(eventType: string | null | undefined): string 
     case "MANUAL_CUSTODY_EXCEPTION":
       return "Báo sự cố thủ công";
     default:
-      return eventType ?? "—";
+      unknownEnum("custody event", eventType);
+      return "Ghi nhận khác";
   }
 }
 
@@ -252,7 +279,8 @@ export function trackingConfidenceMeta(confidence: string | null | undefined): {
     case "UNKNOWN":
       return { label: "Chưa rõ vị trí", tone: "danger" };
     default:
-      return { label: confidence ?? "—", tone: "neutral" };
+      unknownEnum("tracking confidence", confidence);
+      return { label: "Chưa rõ độ tin cậy", tone: "neutral" };
   }
 }
 
@@ -267,12 +295,18 @@ export function incidentTypeLabel(type: string | null | undefined): string {
     case "MISSING_PARCEL":
       return "Thất lạc kiện";
     default:
-      return type ?? "Sự cố kiện";
+      unknownEnum("incident type", type);
+      return "Sự cố kiện";
   }
 }
 
 export function incidentStatusLabel(status: string | null | undefined): string {
   switch (status) {
+    // Contract 2026-08-28: incident vừa được Assistant báo cáo nằm ở OPEN cho
+    // tới khi Driver/điều hành duyệt. Chưa duyệt thì CHƯA có ai đi tìm kiện,
+    // nên không được hiển thị "đang tìm kiếm" ở trạng thái này (§6.6).
+    case "OPEN":
+      return "Chờ phê duyệt";
     case "SEARCHING":
       return "Đang tìm kiếm";
     case "RESOLVED":
@@ -282,7 +316,28 @@ export function incidentStatusLabel(status: string | null | undefined): string {
     case "LOST_CONFIRMED":
       return "Xác nhận thất lạc";
     default:
-      return status ?? "—";
+      unknownEnum("incident status", status);
+      return "Chưa rõ trạng thái";
+  }
+}
+
+// Trạng thái phê duyệt của một báo cáo sự cố custody (§6.9). Assistant chỉ
+// tạo được PENDING_APPROVAL; ba trạng thái còn lại do Driver/điều hành quyết.
+export function custodyApprovalStatusLabel(
+  status: string | null | undefined,
+): string {
+  switch (status) {
+    case "PENDING_APPROVAL":
+      return "Chờ phê duyệt";
+    case "APPROVED":
+      return "Đã duyệt, đang tìm kiếm";
+    case "REJECTED":
+      return "Đã bị từ chối";
+    case "CANCELLED":
+      return "Đã hủy báo cáo";
+    default:
+      unknownEnum("custody approval status", status);
+      return "Chưa rõ trạng thái duyệt";
   }
 }
 
@@ -294,7 +349,8 @@ export function recommendedActionLabel(action: string | null | undefined): strin
     case "KEEP_ON_VEHICLE_OR_REPORT_CUSTODY_EXCEPTION":
       return "Giữ kiện trên xe, hoặc báo sự cố nếu đã lỡ dỡ xuống.";
     default:
-      return action ?? "—";
+      unknownEnum("recommended action", action);
+      return "Liên hệ điều hành để được hướng dẫn.";
   }
 }
 

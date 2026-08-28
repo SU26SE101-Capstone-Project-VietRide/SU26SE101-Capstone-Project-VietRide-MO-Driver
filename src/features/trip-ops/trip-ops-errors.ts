@@ -73,6 +73,14 @@ const MESSAGES: Record<string, string> = {
     "Kiện này đã có sự cố đang mở. Chờ điều hành xử lý, không báo thêm.",
   PARCEL_CUSTODY_EVENT_NOT_FOUND:
     "Kiện chưa có lần quét nào tại điểm này nên chưa đối soát được.",
+  // Luồng báo cáo sự cố -> chờ duyệt (FE-Driver-Assistant-Parcel-Integration
+  // -Guide (1).md §11).
+  PARCEL_CUSTODY_EXCEPTION_REQUEST_NOT_FOUND:
+    "Không tìm thấy báo cáo sự cố này. Tải lại danh sách rồi kiểm tra lại.",
+  PARCEL_CUSTODY_EXCEPTION_ALREADY_DECIDED:
+    "Báo cáo này đã được người khác duyệt hoặc từ chối. Tải lại để xem kết quả.",
+  PARCEL_CUSTODY_EXCEPTION_APPROVAL_REQUIRED:
+    "Báo cáo sự cố chưa được duyệt nên chưa thao tác tiếp được. Chờ tài xế hoặc điều hành duyệt.",
   STOP_NOT_FOUND: "Không tìm thấy điểm dừng này trong chuyến.",
   OPERATOR_SUSPENDED:
     "Tài khoản nhà xe đang bị tạm ngưng. Liên hệ điều hành để mở lại.",

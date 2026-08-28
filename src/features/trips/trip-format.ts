@@ -105,7 +105,11 @@ export function tripStatusMeta(status: string | null | undefined): {
     case "SCHEDULED":
       return { label: "Đã phân ca", tone: "info" };
     default:
-      return { label: status ?? "Không rõ", tone: "neutral" };
+      // App tiếng Việt: enum lạ của backend chỉ log ở dev, không lòi ra UI.
+      if (__DEV__ && status) {
+        console.warn(`[trip-format] chưa có label tiếng Việt cho status: ${status}`);
+      }
+      return { label: "Không rõ trạng thái", tone: "neutral" };
   }
 }
 

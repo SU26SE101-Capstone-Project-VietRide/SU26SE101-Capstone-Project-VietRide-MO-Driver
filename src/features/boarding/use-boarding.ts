@@ -42,6 +42,33 @@ export function useQrScanMutation(tripId: string | null) {
   });
 }
 
+// Xác nhận lên xe cho các ghế đã biết passengerRecordId (lấy từ manifest).
+// KHÔNG đi qua qr-scan: validator `bookingCode` của backend từ chối cả mã do
+// chính nó sinh ra (BE-GAPS.md §5 — hỏi từ 2026-07-29, chưa có trả lời), nên
+// bấm nút trên manifest mà gọi qr-scan là chắc chắn 422.
+export function useBoardPassengers(tripId: string | null) {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: async (passengerRecordIds: string[]) => {
+      // Tuần tự, không Promise.all: mỗi ghế là một thao tác nghiệp vụ riêng —
+      // ghế sau lỗi thì ghế trước vẫn phải được ghi nhận, và lỗi trả về là lỗi
+      // của ghế đầu tiên fail để phụ xe biết đúng chỗ tắc.
+      const boarded: string[] = [];
+      for (const id of passengerRecordIds) {
+        await boardPassenger(tripId as string, id);
+        boarded.push(id);
+      }
+      return boarded;
+    },
+    // Chạy cả khi lỗi giữa chừng: vài ghế có thể đã lên xe thật.
+    onSettled: () => {
+      void queryClient.invalidateQueries({ queryKey: ["manifest", tripId] });
+      void queryClient.invalidateQueries({ queryKey: ["seat-map", tripId] });
+    },
+  });
+}
+
 // boardingStatus là string tự do (vd BOARDED / NOT_BOARDED / PENDING…).
 export function isBoardedStatus(status: string): boolean {
   const normalized = status.toLowerCase();
@@ -61,6 +88,8 @@ export type BookingGroup = {
   bookingCode: string;
   seats: string[];
   boarded: boolean;
+  // passengerRecordId của các ghế CHƯA lên xe — đầu vào cho boardPassenger.
+  pendingRecordIds: string[];
 };
 
 // Manifest trả từng ghế một dòng → gộp theo bookingCode cho dễ thao tác.
@@ -72,11 +101,17 @@ export function groupManifestByBooking(items: ManifestItem[]): BookingGroup[] {
       bookingCode: item.bookingCode,
       seats: [],
       boarded: true,
+      pendingRecordIds: [],
     };
 
     group.seats.push(item.seatNumber);
     // Nhóm coi là "đã lên" khi TẤT CẢ ghế đã lên.
-    group.boarded = group.boarded && isBoardedStatus(item.boardingStatus);
+    if (!isBoardedStatus(item.boardingStatus)) {
+      group.boarded = false;
+      if (item.passengerRecordId) {
+        group.pendingRecordIds.push(item.passengerRecordId);
+      }
+    }
     groups.set(item.bookingCode, group);
   }
 

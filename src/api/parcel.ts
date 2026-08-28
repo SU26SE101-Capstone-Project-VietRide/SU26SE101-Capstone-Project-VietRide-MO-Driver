@@ -4,6 +4,8 @@ import type {
   AssistantParcelItem,
   AssistantParcelManifestData,
   ConfirmParcelTransferData,
+  CustodyExceptionApproval,
+  CustodyExceptionApprovalStatus,
   ManualConfirmParcelData,
   ParcelDetail,
   ResendDeliveryEmailData,
@@ -319,22 +321,51 @@ export type CustodyExceptionInput = {
   evidenceUrls?: string[];
   // Bắt buộc, tối đa 1000 ký tự.
   reason: string;
-  // Với actor role ASSISTANT backend BẮT BUỘC có phê duyệt của giám sát.
-  supervisorApprovalUserId?: string | null;
 };
 
-// Báo sự cố custody: mở incident SEARCHING, sinh 2 search task và đưa kiện
-// sang chờ điều hành xử lý. Dùng khi dỡ nhầm bến, kiện không khớp mô tả,
-// hoặc không đọc được QR (§10).
+// Chuẩn hoá response của report/decision. Backend cũ có thể thiếu vài field
+// (rollout), nên điền mặc định an toàn: thiếu status thì coi như đang chờ
+// duyệt, KHÔNG suy ra là đã được duyệt.
+function normalizeApprovalResponse(
+  raw: unknown,
+  parcelId: string,
+): CustodyExceptionApproval {
+  const record = (asRecord(raw) ?? {}) as Record<string, unknown>;
+  return {
+    ...(record as unknown as CustodyExceptionApproval),
+    parcelId: (record.parcelId as string) ?? parcelId,
+    status:
+      (record.status as CustodyExceptionApprovalStatus | undefined) ??
+      "PENDING_APPROVAL",
+    evidenceReferences: Array.isArray(record.evidenceReferences)
+      ? (record.evidenceReferences as string[])
+      : [],
+    // Chờ duyệt thì backend trả null; ép null khi thiếu để UI không bao giờ
+    // dựng ra một hạn tìm kiếm không có thật.
+    searchDeadline: (record.searchDeadline as string | null) ?? null,
+    approvedCustodyEventId:
+      (record.approvedCustodyEventId as string | null) ?? null,
+    availableActions: Array.isArray(record.availableActions)
+      ? (record.availableActions as string[])
+      : [],
+  };
+}
+
+// Assistant báo sự cố custody. Từ contract 2026-08-28 endpoint này CHỈ tạo
+// một báo cáo chờ duyệt (HTTP 202, status PENDING_APPROVAL): chưa mở
+// SEARCHING, chưa sinh search task, chưa ghi custody event. Driver được phân
+// công hoặc Operator Web duyệt xong mới bắt đầu tìm kiếm (§6.6, §6.9).
+// KHÔNG gửi supervisorApprovalUserId/reviewedByUserId/reviewerUserId —
+// backend lấy danh tính người báo cáo từ JWT.
 export async function reportCustodyException(
   parcelId: string,
   input: CustodyExceptionInput,
-): Promise<AssistantParcelActionData> {
+): Promise<CustodyExceptionApproval> {
   const raw = await apiRequest<unknown>(
     `/v1/assistant/parcels/${parcelId}/custody-exception`,
     { method: "POST", body: input },
   );
-  return normalizeActionResponse(raw, parcelId);
+  return normalizeApprovalResponse(raw, parcelId);
 }
 
 // Direct scan chỉ nhận 4 event này (§8.2).
