@@ -6,6 +6,7 @@ import { Linking } from "react-native";
 import {
   arriveAtDestination,
   arriveAtStop,
+  departFromStop,
   completeTrip,
   reportIncident,
   startTrip,
@@ -49,6 +50,18 @@ export function useArriveAtStop(tripId: string | null) {
 
   return useMutation({
     mutationFn: (stopId: string) => arriveAtStop(tripId as string, stopId),
+    onSuccess: afterArrival,
+  });
+}
+
+// Rời điểm dừng (Guide (2) §B6). Bị chặn khi điểm đó còn kiện chưa đối soát:
+// backend trả 409 PARCEL_STOP_RECONCILIATION_REQUIRED kèm `approvalRequestId`
+// để tài xế mở đúng phiếu đang chờ duyệt.
+export function useDepartFromStop(tripId: string | null) {
+  const afterArrival = useAfterArrival(tripId);
+
+  return useMutation({
+    mutationFn: (stopId: string) => departFromStop(tripId as string, stopId),
     onSuccess: afterArrival,
   });
 }

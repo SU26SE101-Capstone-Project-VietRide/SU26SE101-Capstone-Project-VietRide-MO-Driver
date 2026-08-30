@@ -1,15 +1,17 @@
-import { apiRequest } from "./client";
+import { ApiError, apiRequest } from "./client";
 import type {
   AssistantParcelActionData,
   AssistantParcelItem,
   AssistantParcelManifestData,
   ConfirmParcelTransferData,
+  DestinationReconcileData,
   CustodyExceptionApproval,
   CustodyExceptionApprovalStatus,
   ManualConfirmParcelData,
   ParcelDetail,
   ResendDeliveryEmailData,
   ReweighParcelData,
+  StopDepartureApprovalRequest,
   StopReconcileData,
 } from "./types";
 
@@ -138,6 +140,21 @@ export type AssistantParcelManifestParams = {
   pageSize?: number;
 };
 
+// Doc yêu cầu luôn gửi phân trang kể cả khi không lọc gì. pageSize backend
+// giới hạn 1–100; guide §A2 khuyến nghị lấy nguyên trang 100 cho màn manifest.
+const DEFAULT_MANIFEST_PAGE = 1;
+const DEFAULT_MANIFEST_PAGE_SIZE = 100;
+
+// Manifest CHÍNH cho cả DRIVER lẫn ASSISTANT là route crew — Playbook
+// Reliability v2 §1, §4 và checklist §15 ("Chuyển manifest chính sang
+// /v1/crew/trips/{tripId}/parcels"). Route này role-aware: backend tự trả
+// `availableActions` đúng theo JWT, nên tài xế không thấy nút của phụ xe.
+// Route `/v1/assistant/...` chỉ còn là bản riêng của Assistant, KHÔNG thay thế
+// được (nó thiếu `custodyExceptionApproval` mà tài xế cần để duyệt).
+// Backend chưa deploy route crew thì trả 404 → nhớ một lần rồi dùng route
+// assistant cho các lần sau, không ăn 404 mỗi lần mở màn hình.
+let manifestRoute: "crew" | "assistant" | "unknown" = "unknown";
+
 // Manifest screen-ready của chuyến (§6.1): một lần gọi ra đủ trip context, số
 // liệu tóm tắt, custody/incident và thao tác hợp lệ của từng kiện — không
 // N+1 gọi detail cho từng card. Read-only, không cần Idempotency-Key.
@@ -153,11 +170,29 @@ export async function getAssistantTripParcels(
   }
   // Backend giới hạn 100 ký tự; cắt sớm để khỏi ăn 422 chỉ vì gõ dài.
   if (params.search) query.set("search", params.search.trim().slice(0, 100));
-  if (params.page != null) query.set("page", String(params.page));
-  if (params.pageSize != null) query.set("pageSize", String(params.pageSize));
+  // Doc §Manifest: filter là tuỳ chọn nhưng phân trang thì LUÔN phải gửi.
+  query.set("page", String(params.page ?? DEFAULT_MANIFEST_PAGE));
+  query.set("pageSize", String(params.pageSize ?? DEFAULT_MANIFEST_PAGE_SIZE));
 
-  const queryString = query.toString();
-  const suffix = queryString ? `?${queryString}` : "";
+  const suffix = `?${query.toString()}`;
+
+  if (manifestRoute !== "assistant") {
+    try {
+      const raw = await apiRequest<unknown>(
+        `/v1/crew/trips/${tripId}/parcels${suffix}`,
+      );
+      manifestRoute = "crew";
+      return normalizeManifest(raw);
+    } catch (error) {
+      // CHỈ 404 mới là "backend chưa deploy route crew". 403 (không được phân
+      // công) là lỗi nghiệp vụ thật — ném lên để UI báo đúng.
+      if (!(error instanceof ApiError) || error.statusCode !== 404) {
+        throw error;
+      }
+      manifestRoute = "assistant";
+    }
+  }
+
   const raw = await apiRequest<unknown>(
     `/v1/assistant/trips/${tripId}/parcels${suffix}`,
   );
@@ -398,13 +433,17 @@ export async function recordCustodyScan(
   return normalizeActionResponse(raw, parcelId);
 }
 
+// Playbook v2 §9: body CHỈ còn `departureOverrideReason` (optional). Backend
+// tự tính scanned/manual từ custody event của chính nó — gửi kèm
+// `scannedParcelIds`/`manualExceptionParcelIds` như contract cũ sẽ bị từ chối
+// vì request disallow unknown fields.
 export type ReconcileStopInput = {
-  scannedParcelIds: string[];
-  manualExceptionParcelIds: string[];
-  // Chỉ dùng khi còn kiện chưa đối soát mà vẫn phải chạy tiếp; backend đòi có
-  // ĐỦ CẢ HAI (lý do + giám sát duyệt) mới trả canDepart=true.
+  // Chỉ dùng khi còn kiện chưa đối soát mà vẫn phải chạy tiếp. Guide (2) §F2:
+  // gửi LÝ DO là đủ — backend tự mở phiếu xin duyệt rồi trả
+  // `departureOverrideRequest.requestId` để tài xế duyệt bằng JWT của chính
+  // mình. KHÔNG còn `supervisorApprovalUserId`: field đó đã bị bỏ khỏi contract,
+  // gửi lên chỉ ăn lỗi vì request cấm field lạ.
   departureOverrideReason?: string | null;
-  supervisorApprovalUserId?: string | null;
 };
 
 // Đối soát toàn bộ kiện của một điểm dừng trước khi xe rời đi. Kiện chưa đối
@@ -418,6 +457,103 @@ export function reconcileStop(
   return apiRequest<StopReconcileData>(
     `/v1/assistant/trips/${tripId}/stops/${stopId}/reconcile`,
     { method: "POST", body: input },
+  );
+}
+
+// Đối soát tại BẾN CUỐI sau khi đã dỡ các kiện trả ở bến (Playbook v2 §10).
+// KHÔNG gửi body danh sách kiện — backend tự tính. Kiện còn thiếu thì backend
+// mở `UNSCANNED_HANDOFF/SEARCHING`, KHÔNG kết luận mất hàng.
+export function reconcileDestination(
+  tripId: string,
+): Promise<DestinationReconcileData> {
+  return apiRequest<DestinationReconcileData>(
+    `/v1/assistant/trips/${tripId}/destination/reconcile`,
+    { method: "POST" },
+  );
+}
+
+// Xác nhận kiện đang bị mở phiếu tìm kiếm THỰC RA vẫn nằm trên xe
+// (Playbook v2 §8). Phải quét đúng QR kiện thật. Backend đóng incident và trả
+// kiện về LOADED/IN_TRANSIT — đây là đường thoát duy nhất của crew khi kiện bị
+// khoá ở PENDING_OPERATOR_ACTION.
+export type ConfirmFoundOnVehicleInput = {
+  incidentId: string;
+  parcelCode: string;
+  evidenceReferences?: string[];
+  note?: string | null;
+};
+
+export async function confirmFoundOnVehicle(
+  parcelId: string,
+  input: ConfirmFoundOnVehicleInput,
+): Promise<AssistantParcelActionData> {
+  const raw = await apiRequest<unknown>(
+    `/v1/assistant/parcels/${parcelId}/confirm-found-on-vehicle`,
+    { method: "POST", body: input },
+  );
+  return normalizeActionResponse(raw, parcelId);
+}
+
+// ===== Tài xế duyệt (Guide (2) §E2-E3, §F3-F4) =========================
+// CẢNH BÁO deploy: §22 gap 1/2/6 — controller đã có trong working tree của
+// backend nhưng Gateway route + migration của phiếu rời điểm CHƯA xong, và
+// backend cũng CHƯA có endpoint queue để liệt kê phiếu đang chờ. Vì vậy app
+// chỉ mở được phiếu khi đã biết `parcelId` / `requestId` (từ thông báo hoặc từ
+// error fields khi rời điểm bị chặn), và có thể ăn 404 tới khi BE deploy xong.
+
+export type ApprovalDecision = "APPROVE" | "REJECT";
+
+// Tài xế đọc phiếu báo sự cố custody của một kiện. Chỉ tài xế được phân công
+// chuyến của kiện đó mới đọc được.
+export async function getCustodyExceptionRequest(
+  parcelId: string,
+): Promise<CustodyExceptionApproval> {
+  const raw = await apiRequest<unknown>(
+    `/v1/crew/parcels/${parcelId}/custody-exception`,
+  );
+  return normalizeApprovalResponse(raw, parcelId);
+}
+
+// Tài xế duyệt/từ chối phiếu sự cố. Danh tính người duyệt lấy từ JWT —
+// KHÔNG gửi reviewerUserId (§E1). Duyệt xong mới sinh custody event
+// MANUAL_CUSTODY_EXCEPTION và mở SLA tìm kiếm.
+export async function decideCustodyException(
+  parcelId: string,
+  decision: ApprovalDecision,
+  note: string,
+): Promise<CustodyExceptionApproval> {
+  const raw = await apiRequest<unknown>(
+    `/v1/crew/parcels/${parcelId}/custody-exception-decision`,
+    {
+      method: "POST",
+      body: { decision, ...(note.trim() ? { note: note.trim() } : {}) },
+    },
+  );
+  return normalizeApprovalResponse(raw, parcelId);
+}
+
+// Tài xế đọc phiếu xin rời điểm khi còn kiện chưa đối soát. `requestId` lấy từ
+// response reconcile của phụ xe, hoặc từ `error.fields.approvalRequestId` khi
+// depart bị chặn bằng PARCEL_STOP_RECONCILIATION_REQUIRED.
+export function getStopDepartureApproval(
+  requestId: string,
+): Promise<StopDepartureApprovalRequest> {
+  return apiRequest<StopDepartureApprovalRequest>(
+    `/v1/crew/parcel-stop-departure-approvals/${requestId}`,
+  );
+}
+
+export function decideStopDepartureApproval(
+  requestId: string,
+  decision: ApprovalDecision,
+  note: string,
+): Promise<StopDepartureApprovalRequest> {
+  return apiRequest<StopDepartureApprovalRequest>(
+    `/v1/crew/parcel-stop-departure-approvals/${requestId}/decision`,
+    {
+      method: "POST",
+      body: { decision, ...(note.trim() ? { note: note.trim() } : {}) },
+    },
   );
 }
 

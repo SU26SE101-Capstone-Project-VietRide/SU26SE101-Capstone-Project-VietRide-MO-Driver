@@ -24,6 +24,8 @@ export default function AssistantLayout() {
       <Stack.Screen name="incident" />
       {/* Cài đặt nằm ngoài tab bar (mở từ nút bánh răng góc phải header). */}
       <Stack.Screen name="settings" />
+      {/* Chi tiết kiện — mở sau khi quét QR hoặc nhập tay mã kiện. */}
+      <Stack.Screen name="parcel" />
     </Stack>
   );
 }

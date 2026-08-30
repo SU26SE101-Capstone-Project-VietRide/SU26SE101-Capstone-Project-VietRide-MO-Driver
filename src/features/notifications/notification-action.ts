@@ -152,8 +152,19 @@ export function resolveActionHref(
     case "OPEN_BOOKING_DETAIL":
       return null;
 
-    case "OPEN_PARCEL_DETAIL":
-      return role === "ASSISTANT" ? "/assistant/cargo" : null;
+    // Phụ xe về màn hàng hóa. Tài xế không có màn kiện hàng, nhưng thông báo
+    // kèm parcelId với tài xế nghĩa là có phiếu sự cố chờ duyệt — backend chưa
+    // có endpoint danh sách phiếu chờ (Guide (2) §22 gap 1) nên ĐÂY là đường
+    // duy nhất tài xế mở được phiếu.
+    case "OPEN_PARCEL_DETAIL": {
+      if (role === "ASSISTANT") {
+        return "/assistant/cargo";
+      }
+      const parcelId = stringParam(action.params, "parcelId");
+      return parcelId
+        ? (`/driver/parcel-approval?parcelId=${parcelId}` as Href)
+        : null;
+    }
 
     case "OPEN_SHUTTLE_TRACKING": {
       const shuttleTripId = stringParam(action.params, "shuttleTripId");

@@ -26,6 +26,14 @@ import {
     notificationToneOf,
 } from "@/features/notifications/notification-format";
 import {
+    hasIncidentCoordinates,
+    incidentLocationLabel,
+    openIncidentInMaps,
+    parseVehicleSubstitution,
+    type VehicleSubstitutionInfo,
+} from "@/features/notifications/vehicle-substitution";
+import { encodeWaypointsParam } from "@/features/routes/waypoints";
+import {
     useMarkAllNotificationsReadMutation,
     useMarkNotificationReadMutation,
     useNotificationList,
@@ -93,6 +101,9 @@ export default function NotificationsScreen() {
         read: item.readAt != null,
         // Phase 11: điều hướng theo action của BE, không tự suy từ title/body.
         action: parseNotificationAction(item.action),
+        // Đổi xe do sự cố: payload có xe/chuyến mới + vị trí sự cố để crew
+        // thay thế chạy tới. Loại khác trả null → không vẽ khối phụ.
+        substitution: parseVehicleSubstitution(item.type, item.data),
       })),
     [listQuery.data, now],
   );
@@ -304,6 +315,15 @@ export default function NotificationsScreen() {
                       {notification.title}
                     </Text>
                     <Text style={styles.itemText}>{notification.body}</Text>
+
+                    {/* Đổi xe do sự cố: xe/chuyến được gán + vị trí sự cố.
+                        Thiếu toạ độ thì chỉ hiện mô tả, KHÔNG hiện "null, null"
+                        và cũng không vẽ tuyến cứu hộ nào. */}
+                    {notification.substitution ? (
+                      <VehicleSubstitutionBlock
+                        info={notification.substitution}
+                      />
+                    ) : null}
                   </View>
 
                   {/* Chấm xanh = chưa đọc. */}
@@ -342,6 +362,77 @@ export default function NotificationsScreen() {
           </View>
         ) : null}
       </ScrollView>
+    </View>
+  );
+}
+
+// Khối phụ của thông báo đổi xe do sự cố: xe được gán + vị trí sự cố + nút mở
+// bản đồ ngoài (MOBILE-VEHICLE-SUBSTITUTION-PARCEL-TRANSFER.md). Thiếu toạ độ
+// thì chỉ hiện mô tả — không bao giờ hiện chuỗi "null, null" — và app không tự
+// dựng tuyến cứu hộ hay tracking riêng cho đoạn crew đi tới sự cố.
+function VehicleSubstitutionBlock({ info }: { info: VehicleSubstitutionInfo }) {
+  const styles = useThemedStyles(makeStyles);
+  const theme = useTheme();
+  const router = useRouter();
+
+  return (
+    <View style={styles.substitutionBox}>
+      {info.newVehiclePlateNumber ? (
+        <View style={styles.substitutionRow}>
+          <MaterialIcons
+            name="directions-bus"
+            size={15}
+            color={theme.textSecondary}
+          />
+          <Text style={styles.substitutionText}>
+            Xe thay thế: {info.newVehiclePlateNumber}
+          </Text>
+        </View>
+      ) : null}
+      <View style={styles.substitutionRow}>
+        <MaterialIcons name="place" size={15} color={theme.textSecondary} />
+        <Text style={styles.substitutionText}>
+          {incidentLocationLabel(info)}
+        </Text>
+      </View>
+      {hasIncidentCoordinates(info) ? (
+        <>
+          {/* Dẫn đường TRONG APP bằng Mapbox, giống màn Trung chuyển — crew
+              đang gấp, bung sang app bản đồ ngoài rồi quay lại là mất mạch.
+              Đây là dẫn đường phía client từ vị trí hiện tại, KHÔNG tạo
+              dispatchId/tuyến cứu hộ/tracking riêng như doc cấm. */}
+          <Pressable
+            accessibilityRole="button"
+            style={styles.mapButton}
+            onPress={() =>
+              router.push({
+                pathname: "/turn-by-turn",
+                params: {
+                  points: encodeWaypointsParam([
+                    {
+                      latitude: info.latitude as number,
+                      longitude: info.longitude as number,
+                    },
+                  ]),
+                },
+              })
+            }
+          >
+            <MaterialIcons name="navigation" size={16} color={theme.onAccent} />
+            <Text style={styles.mapButtonText}>Dẫn đường tới điểm sự cố</Text>
+          </Pressable>
+          {/* Giữ đường thoát sang app bản đồ ngoài: máy yếu, hoặc tài xế quen
+              dùng Google Maps thì vẫn mở được. */}
+          <Pressable
+            accessibilityRole="button"
+            style={styles.mapAltButton}
+            onPress={() => void openIncidentInMaps(info)}
+          >
+            <MaterialIcons name="map" size={16} color={theme.textSecondary} />
+            <Text style={styles.mapAltText}>Mở bằng app bản đồ khác</Text>
+          </Pressable>
+        </>
+      ) : null}
     </View>
   );
 }
@@ -516,6 +607,58 @@ const makeStyles = (c: Palette) =>
       color: c.textSecondary,
       fontSize: 13,
       lineHeight: 19,
+    },
+    // Khối phụ của thông báo đổi xe: xe/chuyến mới + vị trí sự cố.
+    substitutionBox: {
+      marginTop: Spacing.two,
+      gap: 6,
+      borderRadius: 12,
+      borderWidth: StyleSheet.hairlineWidth,
+      borderColor: c.border,
+      backgroundColor: c.backgroundElement,
+      padding: Spacing.two,
+    },
+    substitutionRow: {
+      flexDirection: "row",
+      alignItems: "center",
+      gap: 6,
+    },
+    substitutionText: {
+      color: c.textSecondary,
+      flex: 1,
+      fontSize: 13,
+      lineHeight: 19,
+    },
+    mapButton: {
+      flexDirection: "row",
+      alignItems: "center",
+      justifyContent: "center",
+      gap: 6,
+      borderRadius: 999,
+      backgroundColor: c.primary,
+      paddingVertical: 8,
+      paddingHorizontal: Spacing.three,
+    },
+    mapAltButton: {
+      flexDirection: "row",
+      alignItems: "center",
+      justifyContent: "center",
+      gap: 6,
+      borderRadius: 999,
+      borderWidth: StyleSheet.hairlineWidth,
+      borderColor: c.border,
+      paddingVertical: 8,
+      paddingHorizontal: Spacing.three,
+    },
+    mapAltText: {
+      color: c.textSecondary,
+      fontSize: 12,
+      fontWeight: 600,
+    },
+    mapButtonText: {
+      color: c.onAccent,
+      fontSize: 13,
+      fontWeight: 700,
     },
     unreadDot: {
       width: 9,

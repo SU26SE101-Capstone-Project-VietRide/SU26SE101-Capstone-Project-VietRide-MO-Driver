@@ -107,6 +107,9 @@ export type TripStop = {
   // SKIPPED đều null. Khai báo string để không vỡ nếu backend thêm giá trị mới.
   status: TripStopStatus | string;
   actualArrivalTime: string | null;
+  // Mốc rời điểm (Guide (2) §B6). Optional vì payload cũ chưa có field; có giá
+  // trị nghĩa là điểm này đã chốt, không bấm rời lần nữa.
+  actualDepartureTime?: string | null;
   // Chất lượng planned ETA của riêng stop này (FE-MOBILE-DAY51-ETA-RESPONSE.md).
   // Optional vì payload cũ chưa có field; giá trị lạ vẫn hiển thị bình thường.
   plannedEtaQuality?: EstimateQuality | string;
@@ -337,6 +340,16 @@ export type AssistantParcelItem = {
   // Production hiện vẫn trả PagedResult cũ nên toàn bộ nhóm này là optional;
   // có `availableActions` nghĩa là backend đã bật contract mới.
   dropoffLocation?: ParcelLocationRef | null;
+  // ===== Đổi xe do sự cố =====
+  // docs/Implements/MOBILE-VEHICLE-SUBSTITUTION-PARCEL-TRANSFER.md.
+  // Manifest route crew trả CẢ kiện của chuyến này lẫn kiện "incoming" đang
+  // chờ được bốc sang; `transferContext = "TRANSFER_IN"` là dấu nhận biết.
+  // Kiện incoming vẫn mang `tripId` của chuyến CŨ cho tới khi xác nhận xong.
+  transferContext?: string | null;
+  sourceTripId?: string | null;
+  targetTripId?: string | null;
+  // Tên cũ của `targetTripId` (bản handoff đầu); giữ để đọc được cả hai shape.
+  transferTargetTripId?: string | null;
   currentCustody?: ParcelCustodyState | null;
   activeIncident?: ParcelIncident | null;
   paymentState?: ParcelPaymentState | null;
@@ -669,6 +682,35 @@ export type StopReconcileUnresolvedParcel = {
   recommendedAction: string | null;
 };
 
+// Phiếu xin rời điểm khi còn kiện chưa đối soát (Guide (2) §F2). Endpoint
+// duyệt `/v1/crew/parcel-stop-departure-approvals/**` CHƯA production-ready
+// (§22 gap 6) nên app mới chỉ đọc và hiển thị, chưa gọi API duyệt.
+export type StopDepartureApprovalRequest = {
+  requestId: string;
+  tripId: string | null;
+  stopId: string | null;
+  unresolvedParcelIds: string[] | null;
+  departureOverrideReason: string | null;
+  status: string | null;
+  requestedByRole: string | null;
+  requestedAt: string | null;
+  reviewedByRole: string | null;
+  reviewedAt: string | null;
+  reviewNote: string | null;
+};
+
+// POST /v1/assistant/trips/{tripId}/destination/reconcile (Playbook v2 §10).
+// `requiresDriverCompletion = true` ⇒ còn kiện chưa xử lý, CHỈ tài xế được
+// phân công mới gọi complete được (clearance ACKNOWLEDGED_INCIDENTS).
+export type DestinationReconcileData = {
+  expectedCount: number;
+  scannedCount: number;
+  manualExceptionCount: number;
+  unresolvedParcels: StopReconcileUnresolvedParcel[] | null;
+  canComplete: boolean;
+  requiresDriverCompletion: boolean;
+};
+
 export type StopReconcileData = {
   expectedCount: number;
   scannedCount: number;
@@ -676,6 +718,10 @@ export type StopReconcileData = {
   unresolvedParcels: StopReconcileUnresolvedParcel[] | null;
   canDepart: boolean;
   requiresSupervisorApproval: boolean;
+  // Guide (2) §F2: gửi kèm `departureOverrideReason` mà vẫn còn kiện thiếu thì
+  // backend mở/phát lại phiếu xin rời điểm. Tài xế duyệt bằng JWT của chính
+  // mình qua `requestId` — app KHÔNG gửi UUID người duyệt.
+  departureOverrideRequest?: StopDepartureApprovalRequest | null;
   // Alias read-only của bản cũ; FE mới dùng `unresolvedParcels`.
   unresolvedParcelIds?: string[] | null;
 };
@@ -1169,6 +1215,14 @@ export type StopArrivalData = {
   stopId: string;
   status: string;
   actualArrivalTime: string;
+};
+
+// POST /v1/driver/trips/{tripId}/stops/{stopId}/depart — rời điểm dừng.
+export type StopDepartureData = {
+  tripId: string;
+  stopId: string;
+  status: string;
+  actualDepartureTime: string | null;
 };
 
 // POST /v1/driver/trips/{tripId}/destination/arrive — KHÔNG hoàn tất chuyến,

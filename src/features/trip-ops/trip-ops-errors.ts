@@ -58,6 +58,20 @@ const MESSAGES: Record<string, string> = {
   PARCEL_DELIVERY_REJECTED_WINDOW_EXPIRED:
     "Người nhận đã từ chối kiện này, không gửi lại email xác nhận được nữa.",
   DROP_OFF_STOP_NOT_FOUND: "Không tìm thấy điểm trả của kiện trong chuyến.",
+  // Hoàn tất chuyến khi chưa đối soát bến cuối (Playbook v2 §10, §14).
+  PARCEL_DESTINATION_RECONCILIATION_REQUIRED:
+    "Phải đối soát kiện tại bến cuối trước khi hoàn tất chuyến.",
+  // Bấm rời điểm lần thứ hai. Không phải lỗi thật — điểm đã chốt rồi.
+  TRIP_STOP_ALREADY_DEPARTED: "Điểm này đã chốt rời đi rồi.",
+  TRIP_STOP_NOT_ARRIVED: "Phải xác nhận đã tới điểm này trước khi rời đi.",
+  // Rời điểm khi còn kiện chưa đối soát (Guide (2) §19 + §F5). Tài xế phải
+  // duyệt phiếu xin rời điểm thì Trip service mới cho depart.
+  PARCEL_STOP_RECONCILIATION_REQUIRED:
+    "Còn kiện chưa đối soát tại điểm này. Đối soát lại hoặc chờ tài xế duyệt phiếu rời điểm.",
+  PARCEL_STOP_DEPARTURE_APPROVAL_NOT_FOUND:
+    "Không tìm thấy phiếu xin rời điểm. Đối soát lại để hệ thống mở phiếu mới.",
+  PARCEL_STOP_DEPARTURE_ALREADY_DECIDED:
+    "Phiếu rời điểm đã có người duyệt. Tải lại để xem kết quả.",
   // ===== Custody v2 (docs/Implements/API-Parcel-Driver.md §7.4, §8) =====
   // Dỡ sai bến: backend KHÔNG đổi trạng thái, kiện vẫn tính là trên xe. UI
   // đọc thêm error.fields để chỉ ra bến đúng và hành động bắt buộc.

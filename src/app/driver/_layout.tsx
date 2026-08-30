@@ -25,6 +25,9 @@ export default function DriverLayout() {
       {/* Manifest chuyến trung chuyển — mở từ section Xe trung chuyển hoặc
           push notification SHUTTLE_ASSIGNED. */}
       <Stack.Screen name="shuttle/[shuttleTripId]" />
+      {/* Duyệt phiếu sự cố kiện / xin rời điểm — mở kèm parcelId hoặc
+          requestId (backend chưa có endpoint danh sách phiếu chờ). */}
+      <Stack.Screen name="parcel-approval" />
     </Stack>
   );
 }

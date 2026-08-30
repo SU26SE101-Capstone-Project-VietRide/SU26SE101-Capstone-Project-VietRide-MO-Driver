@@ -49,10 +49,12 @@ export function parcelStatusMeta(status: string | null | undefined): {
       return { label: "Đã lên xe", tone: "success" };
     case "IN_TRANSIT":
       return { label: "Đang vận chuyển", tone: "primary" };
+    // Đổi xe do sự cố: kiện chờ crew xe MỚI xác nhận đã bốc lên thực tế.
     case "PENDING_TRANSFER_CONFIRM":
-      return { label: "Chờ xác nhận chuyển", tone: "info" };
+      return { label: "Chờ xác nhận chuyển sang xe mới", tone: "info" };
+    // Quá hạn 30 phút xác nhận → crew không tự retry được nữa.
     case "TRANSFER_ESCALATED":
-      return { label: "Chuyển vượt cấp", tone: "warning" };
+      return { label: "Quá hạn — chờ điều hành xử lý", tone: "danger" };
     case "UNLOADED":
       return { label: "Đã dỡ", tone: "info" };
     case "DELIVERED_PENDING_CONFIRM":
@@ -124,7 +126,12 @@ export type ParcelAction =
   | "resend-email"
   // Custody v2 (API-Parcel-Driver.md §8): ghi nhận quét và báo sự cố.
   | "custody-scan"
-  | "custody-exception";
+  | "custody-exception"
+  // Reliability v2 §8: kiện đang bị mở phiếu tìm kiếm nhưng thực ra vẫn trên
+  // xe — quét QR xác nhận để đóng phiếu và trả kiện về luồng bình thường.
+  | "confirm-found-on-vehicle"
+  // Chỉ xem trạng thái sự cố, không mutate (§13).
+  | "view-incident";
 
 export function allowedParcelActions(
   status: string | null | undefined,
@@ -172,37 +179,161 @@ const SERVER_ACTION_MAP: Record<string, ParcelAction> = {
   RESEND_EMAIL: "resend-email",
   CUSTODY_SCAN: "custody-scan",
   CUSTODY_EXCEPTION: "custody-exception",
+  CONFIRM_FOUND_ON_VEHICLE: "confirm-found-on-vehicle",
+  VIEW_INCIDENT: "view-incident",
 };
 
-// Danh sách thao tác cho một card. Có `availableActions` (contract mới) thì
-// dùng nguyên; backend production còn cũ thì rơi về bảng suy theo status.
+// Vòng đời đã đóng: không thao tác nào của crew còn hợp lệ.
+const TERMINAL_STATUSES = new Set([
+  "REJECTED",
+  "CANCELLED",
+  "EXPIRED",
+  "RETURNED",
+  "DELIVERY_CONFIRMED",
+]);
+
+// Kiện đang nằm trong tay crew (đã nhận tại bến, chưa giao xong) → được ghi
+// nhận custody và báo sự cố ở mọi bước. Trước khi check-in kiện còn ở tay
+// khách, sau khi kết thúc vòng đời thì không còn gì để ghi nhận.
+const CUSTODY_STATUSES = new Set([
+  "CHECKED_IN",
+  "PENDING_FINAL_PAYMENT",
+  "READY_TO_LOAD",
+  "LOADED",
+  "IN_TRANSIT",
+  "PENDING_TRANSFER_CONFIRM",
+  "TRANSFER_ESCALATED",
+  "UNLOADED",
+  "DELIVERED_PENDING_CONFIRM",
+  "PENDING_OPERATOR_ACTION",
+]);
+
+// Thao tác nào HỢP LỆ ở trạng thái này — ràng buộc nghiệp vụ phía client.
+// §11 nói backend là nguồn truth, nhưng resolver của backend đã sai hai lần
+// (quên REWEIGH ở CHECKED_IN, trả CUSTODY_SCAN cho kiện REJECTED) nên app
+// giao đúng phần của mình: backend quyết định CÓ CHO hay không, còn bảng này
+// chặn những thao tác mà nghiệp vụ vốn đã không cho phép.
+function businessRuleActions(status: string | null): ParcelAction[] {
+  if (TERMINAL_STATUSES.has(status ?? "")) {
+    return [];
+  }
+
+  const lifecycle = allowedParcelActions(status);
+  // Hai action liên quan sự cố không gắn với một status cụ thể: backend chỉ trả
+  // khi kiện đang có incident phù hợp, nên cứ có là cho hiện (Playbook v2 §8,
+  // §13). `confirm-found-on-vehicle` đặc biệt quan trọng — đó là đường DUY NHẤT
+  // để crew gỡ kiện khỏi PENDING_OPERATOR_ACTION khi hàng vẫn nằm trên xe.
+  const incidentActions: ParcelAction[] = [
+    "confirm-found-on-vehicle",
+    "view-incident",
+  ];
+
+  return CUSTODY_STATUSES.has(status ?? "")
+    ? [...lifecycle, ...incidentActions, "custody-scan", "custody-exception"]
+    : [...lifecycle, ...incidentActions];
+}
+
+// Danh sách thao tác cho một card = giao của `availableActions` (backend) và
+// bảng ràng buộc theo status. Backend còn contract cũ (không trả
+// availableActions) thì dùng thẳng bảng ràng buộc.
 export function resolveParcelActions(parcel: {
   status: string | null;
   availableActions?: string[] | null;
 }): ParcelAction[] {
+  const allowed = businessRuleActions(parcel.status);
+
   if (!Array.isArray(parcel.availableActions)) {
-    return allowedParcelActions(parcel.status);
+    return allowed;
   }
 
   const actions: ParcelAction[] = [];
   for (const raw of parcel.availableActions) {
     const mapped = SERVER_ACTION_MAP[raw];
     // Backend thêm action mới mà app chưa biết vẽ nút → bỏ qua, không đoán.
-    if (mapped && !actions.includes(mapped)) {
+    // Backend trả action mà status không cho phép (vd CUSTODY_SCAN trên kiện
+    // REJECTED) → cũng bỏ, bấm vào chỉ ăn VALIDATION_ERROR.
+    if (mapped && allowed.includes(mapped) && !actions.includes(mapped)) {
       actions.push(mapped);
     }
   }
 
-  // WORKAROUND gap backend (FE-Driver-Assistant-Parcel-Integration-Guide.md §9
-  // và §13.1): resolver của backend quên `REWEIGH` cho kiện `CHECKED_IN`, chỉ
-  // trả `CUSTODY_SCAN`. Nếu bám nguyên availableActions thì card mất hẳn bước
-  // cân/đo — phụ xe không đi tiếp được tới READY_TO_LOAD.
-  // XOÁ khối này ngay khi backend sửa resolver.
-  if (parcel.status === "CHECKED_IN" && !actions.includes("reweigh")) {
-    actions.push("reweigh");
-  }
-
+  // Trước đây app tự thêm `REWEIGH` cho kiện CHECKED_IN vì resolver backend
+  // quên trả. Playbook Reliability v2 §13 cấm hẳn: "Nếu action không có: không
+  // render nút, kể cả FE nghĩ status có vẻ hợp lệ" — nên workaround đã bỏ.
+  // Kiện CHECKED_IN mà không có nút cân/đo nghĩa là backend chưa cho phép;
+  // báo BE chứ không tự vẽ nút rồi để phụ xe bấm vào lỗi.
   return actions;
+}
+
+// ===== Đổi xe do sự cố ================================================
+// docs/Implements/MOBILE-VEHICLE-SUBSTITUTION-PARCEL-TRANSFER.md.
+
+type TransferFields = {
+  status: string | null;
+  transferContext?: string | null;
+  sourceTripId?: string | null;
+  targetTripId?: string | null;
+  transferTargetTripId?: string | null;
+};
+
+// Chuyến đích của kiện đang chờ chuyển. Backend đổi tên field giữa hai bản
+// handoff (`targetTripId` ↔ `transferTargetTripId`) nên đọc cả hai.
+export function transferTargetTripOf(parcel: TransferFields): string | null {
+  return parcel.targetTripId ?? parcel.transferTargetTripId ?? null;
+}
+
+// Kiện "incoming": nằm trong manifest chuyến này nhưng thực tế còn ở xe cũ,
+// chờ crew bốc sang rồi xác nhận. `tripId` của nó VẪN là chuyến cũ.
+export function isIncomingTransfer(parcel: TransferFields): boolean {
+  if (parcel.transferContext === "TRANSFER_IN") {
+    return true;
+  }
+  // Backend chưa gửi transferContext thì suy theo status — chỉ hai trạng thái
+  // này mới có nghĩa "đang chờ chuyển".
+  return (
+    parcel.status === "PENDING_TRANSFER_CONFIRM" ||
+    parcel.status === "TRANSFER_ESCALATED"
+  );
+}
+
+// Chỉ crew của chuyến ĐÍCH được xác nhận. Crew chuyến cũ mở cùng kiện thì
+// không được thấy nút, nếu không hai bên bấm chồng nhau. Backend không gửi đủ
+// field để phân biệt thì cho qua — `availableActions` của nó đã là nguồn truth.
+export function canConfirmTransferHere(
+  parcel: TransferFields,
+  tripId: string | null,
+): boolean {
+  const target = transferTargetTripOf(parcel);
+  if (!target || !tripId) {
+    return true;
+  }
+  return target === tripId;
+}
+
+// Số điện thoại backend trả dạng E.164 (`+84888151546`) — dài, dính liền, phụ
+// xe đọc để gọi cho người nhận rất dễ nhầm. Đưa về dạng nội địa quen mắt:
+// +84888151546 → 0888 151 546. Số không nhận dạng được thì trả nguyên văn,
+// KHÔNG cắt xén (thà xấu còn hơn gọi nhầm số).
+export function formatPhone(phone: string | null | undefined): string {
+  if (!phone) {
+    return "";
+  }
+  const digits = phone.replace(/[^\d+]/g, "");
+  const local = digits.startsWith("+84")
+    ? `0${digits.slice(3)}`
+    : digits.startsWith("84") && digits.length === 11
+      ? `0${digits.slice(2)}`
+      : digits;
+
+  // Di động VN sau chuyển đổi đầu số: 10 chữ số, nhóm 4-3-3.
+  if (/^0\d{9}$/.test(local)) {
+    return `${local.slice(0, 4)} ${local.slice(4, 7)} ${local.slice(7)}`;
+  }
+  // Số cố định/đầu số cũ 11 số: nhóm 4-3-4.
+  if (/^0\d{10}$/.test(local)) {
+    return `${local.slice(0, 4)} ${local.slice(4, 7)} ${local.slice(7)}`;
+  }
+  return local;
 }
 
 // Vị trí custody hiển thị gọn: ưu tiên tên bến/điểm dừng backend snapshot.
@@ -216,23 +347,79 @@ export function locationLabel(
     return "—";
   }
   if (location.name) {
+    const name = humanizeLocationSnapshot(location.name);
     return location.orderIndex != null
-      ? `${location.name} (điểm ${location.orderIndex + 1})`
-      : location.name;
+      ? `${name} (điểm ${location.orderIndex + 1})`
+      : name;
   }
-  switch (location.type) {
-    case "ORIGIN_STATION":
-      return "Bến đi";
-    case "DESTINATION_STATION":
-      return "Bến cuối";
-    case "ROUTE_STOP":
-      return "Điểm dừng dọc đường";
-    case "VEHICLE":
-      return "Trên xe";
-    default:
-      unknownEnum("location type", location.type);
-      return "Vị trí khác";
+  return locationTypeLabel(location.type);
+}
+
+// Ghép câu mô tả vị trí cho tự nhiên. Ghép cứng "tại " + nhãn thì ra
+// "…tại Trên xe" — sai ngữ pháp và đọc rất kỳ. "Trên xe"/"Kho hàng" cần giới
+// từ khác với tên bến.
+export function locationPhrase(
+  location:
+    | { type?: string | null; name?: string | null; orderIndex?: number | null }
+    | null
+    | undefined,
+): string {
+  const label = locationLabel(location);
+  if (label === "—") {
+    return "chưa rõ vị trí";
   }
+  // "Trên xe", "Trên xe 51B-12345" → không thêm "tại", và viết thường vì nó
+  // nằm GIỮA câu ("Nhận từ chuyến khác trên xe"), không phải đầu câu.
+  if (label.startsWith("Trên xe")) {
+    return `trên xe${label.slice("Trên xe".length)}`;
+  }
+  if (label.startsWith("Kho hàng")) {
+    return `tại kho hàng${label.slice("Kho hàng".length)}`;
+  }
+  if (label === "Vị trí khác") {
+    return "ở vị trí khác";
+  }
+  return `tại ${label}`;
+}
+
+const LOCATION_TYPE_LABELS: Record<string, string> = {
+  ORIGIN_STATION: "Bến đi",
+  DESTINATION_STATION: "Bến cuối",
+  ROUTE_STOP: "Điểm dừng dọc đường",
+  VEHICLE: "Trên xe",
+  WAREHOUSE: "Kho hàng",
+};
+
+function locationTypeLabel(type: string | null | undefined): string {
+  const label = LOCATION_TYPE_LABELS[type ?? ""];
+  if (label) {
+    return label;
+  }
+  unknownEnum("location type", type);
+  return "Vị trí khác";
+}
+
+const UUID_PATTERN =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+// `locationSnapshot` backend gửi có khi là chuỗi kỹ thuật dạng
+// "VEHICLE: 4f0c…" hoặc "ROUTE_STOP: <uuid>" — để nguyên là enum thô lòi lên
+// màn hình phụ xe (quan sát thực tế 30/08: "Nhận từ chuyến khác tại VEHICLE:
+// …"). Bóc tiền tố enum ra, dịch sang tiếng Việt; phần đuôi là UUID thì bỏ
+// hẳn vì phụ xe không đọc được, còn biển số/tên bến thì giữ lại.
+function humanizeLocationSnapshot(name: string): string {
+  const match = name.match(/^([A-Z][A-Z_]{3,})\s*[:\-–]\s*(.*)$/);
+  if (!match) {
+    return name;
+  }
+  const [, rawType, rest] = match;
+  const label = LOCATION_TYPE_LABELS[rawType];
+  if (!label) {
+    unknownEnum("location snapshot type", rawType);
+    return rest.trim() || "Vị trí khác";
+  }
+  const detail = rest.trim();
+  return !detail || UUID_PATTERN.test(detail) ? label : `${label} ${detail}`;
 }
 
 // Loại custody event (lastEventType / createdCustodyEvent.eventType).
@@ -284,16 +471,30 @@ export function trackingConfidenceMeta(confidence: string | null | undefined): {
   }
 }
 
+// Đủ 9 giá trị ParcelIncidentType của domain hiện tại
+// (FE-Driver-Assistant-Parcel-Integration-Guide (2) §E1). Trước đây chỉ map 4
+// và còn map nhầm tên `MISSING_PARCEL` (không có trong enum) nên kiện thất lạc
+// thật hiện ra chữ chung chung "Sự cố kiện".
 export function incidentTypeLabel(type: string | null | undefined): string {
   switch (type) {
+    case "MISSING":
+      return "Không tìm thấy kiện";
+    case "MISSING_AFTER_DEPARTURE":
+      return "Mất kiện sau khi rời bến";
     case "WRONG_STOP":
       return "Dỡ nhầm điểm";
+    case "DELIVERY_NOT_RECEIVED":
+      return "Người nhận báo chưa nhận được";
+    case "PARTIAL_LOSS":
+      return "Thiếu một phần hàng";
+    case "DAMAGED":
+      return "Kiện bị hư hỏng";
+    case "SCAN_IDENTITY_MISMATCH":
+      return "Mã quét không khớp kiện";
     case "PACKAGE_IDENTITY_MISMATCH":
       return "Kiện không khớp mô tả";
     case "UNSCANNED_HANDOFF":
       return "Bàn giao không quét QR";
-    case "MISSING_PARCEL":
-      return "Thất lạc kiện";
     default:
       unknownEnum("incident type", type);
       return "Sự cố kiện";
@@ -362,6 +563,22 @@ export type CustodyLocationMismatch = {
   actualStop: string | null;
   requiredAction: string | null;
 };
+
+// Rời điểm bị chặn vì còn kiện chưa đối soát (Guide (2) §F5). Trả về id của
+// phiếu xin rời điểm đang chờ để tài xế mở đúng phiếu đó — §19 cấm tự dựng một
+// phê duyệt cục bộ.
+export function stopDepartureBlocked(error: unknown): string | null {
+  if (
+    !(error instanceof ApiError) ||
+    error.code !== "PARCEL_STOP_RECONCILIATION_REQUIRED"
+  ) {
+    return null;
+  }
+  return (
+    error.fields?.find((item) => item.field === "approvalRequestId")?.message ??
+    null
+  );
+}
 
 export function custodyLocationMismatch(
   error: unknown,

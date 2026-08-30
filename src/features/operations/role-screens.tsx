@@ -1,7 +1,7 @@
 import { MaterialIcons } from "@expo/vector-icons";
 import { useQueryClient } from "@tanstack/react-query";
 import * as Haptics from "expo-haptics";
-import { useRouter } from "expo-router";
+import { useRouter, type Href } from "expo-router";
 import {
     Fragment,
     useEffect,
@@ -13,6 +13,7 @@ import {
     ActivityIndicator,
     Alert,
     Image,
+    Modal,
     Pressable,
     StyleSheet,
     Text,
@@ -41,9 +42,11 @@ import type {
 import { sendRagFeedback, streamRagChat } from "@/api/rag";
 import {
   INCIDENT_CATEGORIES,
+  type ManifestItem,
   type AssistantParcelItem,
   type CustodyExceptionApproval,
   type ParcelLocationRef,
+  type DestinationReconcileData,
   type StopReconcileData,
   type IncidentCategory,
   type BookingUpdatedEvent,
@@ -98,24 +101,30 @@ import {
     SurfaceCard,
 } from "@/features/operations/ui";
 import {
+  canConfirmTransferHere,
   custodyApprovalStatusLabel,
   custodyEventLabel,
   custodyLocationMismatch,
+  formatPhone,
   formatVnd,
   incidentStatusLabel,
   incidentTypeLabel,
+  isIncomingTransfer,
   isParcelCode,
   locationLabel,
+  locationPhrase,
   parcelStatusMeta,
   recommendedActionLabel,
   resolveParcelActions,
   sizeCategoryLabel,
+  stopDepartureBlocked,
   trackingConfidenceMeta,
 } from "@/features/parcels/parcel-format";
 import { TripRouteMap } from "@/features/routes/trip-route-map";
 import { useTripRouteGeometry } from "@/features/routes/use-route";
 import { ShuttleScheduleSection } from "@/features/shuttle/shuttle-schedule-section";
 import { EvidenceCameraModal } from "@/features/parcels/evidence-camera";
+import { EvidencePicker } from "@/features/parcels/evidence-picker";
 import {
   MAX_EVIDENCE_PHOTOS,
   uploadEvidencePhotos,
@@ -123,12 +132,14 @@ import {
 import {
   useAssistantTripParcels,
   useCheckInParcel,
+  useConfirmFoundOnVehicle,
   useConfirmParcelDelivery,
   useConfirmParcelTransfer,
   useCustodyException,
   useCustodyScan,
   useDeliverParcel,
   useLoadParcel,
+  useReconcileDestination,
   useReconcileStop,
   useResendDeliveryEmail,
   useReweighParcel,
@@ -147,6 +158,7 @@ import {
   getCurrentCoords,
   useArriveAtDestination,
   useArriveAtStop,
+  useDepartFromStop,
   useLocationPermission,
   useCompleteTrip,
   useReportIncident,
@@ -210,11 +222,11 @@ function liveEtaLine(eta: TripTargetEta): string {
 function bookingUpdateBannerText(event: BookingUpdatedEvent): string | null {
   switch (event.reason) {
     case "BOOKING_CANCELLED":
-      return `Có booking vừa bị hủy${event.bookingCode ? ` (${event.bookingCode})` : ""}. Danh sách ghế đã được làm mới.`;
+      return `Có vé vừa bị hủy${event.bookingCode ? ` (${event.bookingCode})` : ""}. Danh sách ghế đã được làm mới.`;
     case "PASSENGER_BOARDED":
       return "Có hành khách vừa được xác nhận lên xe.";
     case "BOOKING_TRANSFERRED":
-      return "Có booking vừa được chuyển chuyến hoặc đổi ghế do đổi xe. Danh sách ghế đã được làm mới.";
+      return "Có vé vừa được chuyển chuyến hoặc đổi ghế do đổi xe. Danh sách ghế đã được làm mới.";
     default:
       return null;
   }
@@ -727,7 +739,7 @@ export function DriverTripScreen() {
             ) : null}
             {bookingBanner ? (
               <Text style={styles.metaText}>
-                Có booking mới: {bookingBanner.bookingCode} ·{" "}
+                Có vé mới: {bookingBanner.bookingCode} ·{" "}
                 {bookingBanner.passengerCount} khách. Danh sách ghế đã được
                 làm mới.
               </Text>
@@ -1061,6 +1073,8 @@ export function AssistantBoardingScreen() {
   const [codeDraft, setCodeDraft] = useState("");
   const [scanResult, setScanResult] = useState<ScanResult | null>(null);
   const [scannerOpen, setScannerOpen] = useState(false);
+  // Ghế vừa chạm trên sơ đồ → mở bảng trượt thông tin vé.
+  const [selectedSeat, setSelectedSeat] = useState<string | null>(null);
 
   // Socket crew room listen-only: phụ xe không có màn nào mount useGpsBroadcast
   // (hook đó chỉ ở màn Chuyến của driver) nên thiếu cái này thì màn Đón khách
@@ -1129,6 +1143,25 @@ export function AssistantBoardingScreen() {
     });
     return map;
   }, [items]);
+
+  // TẠM (chẩn đoán 30/08): ghế nào kho ghế báo đã bán nhưng manifest không có
+  // vé — trường hợp A10 sau khi đổi xe. In ra logcat để đối chiếu với BE.
+  // XOÁ khi đã chốt nguyên nhân với backend.
+  useEffect(() => {
+    if (!__DEV__ || !seatMapQuery.data) {
+      return;
+    }
+    const bookedSeats = seatMapQuery.data.seats
+      .filter((seat) => seat.status?.toUpperCase() === "BOOKED")
+      .map((seat) => seat.seatNumber);
+    const manifestSeats = items.map((item) => item.seatNumber);
+    const missing = bookedSeats.filter(
+      (seat) => seat != null && !manifestSeats.includes(seat),
+    );
+    console.warn(
+      `[seat-map] trip=${tripId} bán=${JSON.stringify(bookedSeats)} manifest=${JSON.stringify(manifestSeats)} thiếu-vé=${JSON.stringify(missing)}`,
+    );
+  }, [seatMapQuery.data, items, tripId]);
 
   // Xác nhận lên xe cho một booking bằng passengerRecordId có sẵn trong
   // manifest. Đây là đường đi ĐÚNG cho nút trên danh sách: qr-scan chỉ dùng khi
@@ -1260,7 +1293,7 @@ export function AssistantBoardingScreen() {
             </View>
             {bookingBanner ? (
               <Text style={styles.metaText}>
-                Có booking mới: {bookingBanner.bookingCode} ·{" "}
+                Có vé mới: {bookingBanner.bookingCode} ·{" "}
                 {bookingBanner.passengerCount} khách. Danh sách ghế đã được
                 làm mới.
               </Text>
@@ -1347,6 +1380,7 @@ export function AssistantBoardingScreen() {
                     seats={seatMapQuery.data.seats}
                     aisles={seatMapQuery.data.aisles}
                     seatStatusByNumber={seatStatusByNumber}
+                    onSelectSeat={setSelectedSeat}
                   />
                   <View style={styles.seatLegend}>
                     {(
@@ -1409,7 +1443,123 @@ export function AssistantBoardingScreen() {
           )}
         </>
       )}
+
+      {selectedSeat ? (
+        <SeatInfoSheet
+          seatNumber={selectedSeat}
+          item={items.find((item) => item.seatNumber === selectedSeat) ?? null}
+          boarding={boardSeats.isPending}
+          onClose={() => setSelectedSeat(null)}
+          onBoard={() => {
+            const item = items.find(
+              (entry) => entry.seatNumber === selectedSeat,
+            );
+            if (!item) {
+              return;
+            }
+            // Soát đúng MỘT ghế đang chọn, không kéo cả booking lên — phụ xe
+            // chạm ghế nào là xác nhận khách ngồi ghế đó.
+            boardSeats.mutate([item.passengerRecordId], {
+              onSuccess: () => setSelectedSeat(null),
+            });
+          }}
+        />
+      ) : null}
     </OperationsScreen>
+  );
+}
+
+// Bảng trượt thông tin ghế vừa chạm trên sơ đồ. Đặt ở đây thay vì đẩy phụ xe
+// xuống danh sách vé: nhìn sơ đồ thấy ghế chưa lên là soát ngay tại chỗ.
+//
+// LƯU Ý dữ liệu: manifest của backend KHÔNG trả tên và số điện thoại khách
+// (xem docs/Implements/REQUEST-BE-BOARDING-MANIFEST-PASSENGER-INFO.md), nên bảng
+// này mới chỉ hiện được mã vé / mã booking / điểm đón. Chỗ hiển thị tên đã chừa
+// sẵn, BE bổ sung field là điền vào, không phải sửa lại giao diện.
+function SeatInfoSheet({
+  seatNumber,
+  item,
+  onBoard,
+  boarding,
+  onClose,
+}: {
+  seatNumber: string;
+  item: ManifestItem | null;
+  onBoard: () => void;
+  boarding: boolean;
+  onClose: () => void;
+}) {
+  const styles = useThemedStyles(makeStyles);
+  const theme = useTheme();
+  const boarded = item ? isBoardedStatus(item.boardingStatus) : false;
+
+  return (
+    <Modal
+      visible
+      transparent
+      animationType="slide"
+      onRequestClose={onClose}
+      statusBarTranslucent
+    >
+      {/* Chạm ra ngoài để đóng — thói quen quen thuộc của bảng trượt. */}
+      <Pressable style={styles.sheetScrim} onPress={onClose} />
+      <View style={styles.sheet}>
+        <View style={styles.sheetHandle} />
+        <View style={styles.sheetHeader}>
+          <Text style={styles.sheetTitle}>Ghế {seatNumber}</Text>
+          {item ? (
+            <StatusChip
+              label={boarded ? "Đã lên xe" : "Chưa lên xe"}
+              tone={boarded ? "success" : "warning"}
+            />
+          ) : null}
+        </View>
+
+        {item ? (
+          <View style={styles.metaStack}>
+            <View style={styles.metaRow}>
+              <MaterialIcons
+                name="confirmation-number"
+                size={15}
+                color={theme.textSecondary}
+              />
+              <Text style={[styles.metaText, styles.metaTextGrow]}>
+                Vé {item.ticketCode ?? item.bookingCode}
+              </Text>
+            </View>
+            <View style={styles.metaRow}>
+              <MaterialIcons
+                name="place"
+                size={15}
+                color={theme.textSecondary}
+              />
+              <Text style={[styles.metaText, styles.metaTextGrow]}>
+                Đón tại {item.pickupStop ?? "bến đầu"}
+              </Text>
+            </View>
+            {!boarded ? (
+              <ActionButton
+                icon="how-to-reg"
+                label={boarding ? "Đang xác nhận…" : "Xác nhận lên xe"}
+                tone="primary"
+                disabled={boarding}
+                onPress={onBoard}
+              />
+            ) : null}
+          </View>
+        ) : (
+          // Ghế trống hoặc ghế đã bán mà chưa có vé trong manifest — nói rõ
+          // thay vì mở bảng trống trơn.
+          <Text style={styles.metaText}>
+            Ghế này chưa có vé trong danh sách soát. Nếu sơ đồ đang tô “Đã đặt”
+            thì khách mới giữ chỗ, chưa xuất vé — liên hệ điều hành nếu tới giờ
+            chạy mà vẫn vậy.
+          </Text>
+        )}
+
+        <ActionButton icon="close" label="Đóng" tone="ghost" onPress={onClose} />
+      </View>
+    </Modal>
   );
 }
 
@@ -1418,10 +1568,14 @@ function ApiSeatGrid({
   seatStatusByNumber,
   seats,
   aisles,
+  onSelectSeat,
 }: {
   seatStatusByNumber: Map<string, "boarded" | "pending">;
   seats: SeatCell[];
   aisles: SeatMapAisle[];
+  // Chạm vào ghế để mở thông tin vé — phụ xe nhìn sơ đồ thấy ghế chưa lên là
+  // soát ngay tại chỗ, khỏi cuộn xuống danh sách mò đúng dòng.
+  onSelectSeat?: (seatNumber: string) => void;
 }) {
   const styles = useThemedStyles(makeStyles);
 
@@ -1498,7 +1652,16 @@ function ApiSeatGrid({
 
                   return (
                     <Fragment key={seat.seatNumber}>
-                      <View
+                      <Pressable
+                        accessibilityRole="button"
+                        accessibilityLabel={`Ghế ${seat.seatNumber}`}
+                        // Ô không có số ghế (layout lỗi) thì chạm cũng không mở
+                        // được gì — bỏ qua thay vì mở bảng trống.
+                        onPress={() =>
+                          seat.seatNumber
+                            ? onSelectSeat?.(seat.seatNumber)
+                            : undefined
+                        }
                         style={[
                           styles.seatCell,
                           seatState == null && styles.seatEmpty,
@@ -1508,7 +1671,7 @@ function ApiSeatGrid({
                         ]}
                       >
                         <Text style={styles.seatLabel}>{seat.seatNumber}</Text>
-                      </View>
+                      </Pressable>
                       {walkway}
                     </Fragment>
                   );
@@ -1523,6 +1686,7 @@ function ApiSeatGrid({
 }
 
 export function AssistantCargoScreen() {
+  const router = useRouter();
   const styles = useThemedStyles(makeStyles);
   const theme = useTheme();
   // Phụ xe có thể chạy nhiều ca/ngày, và kiện của ca sau phải được check-in
@@ -1530,9 +1694,16 @@ export function AssistantCargoScreen() {
   // từ bộ chọn dùng chung, không khóa cứng vào chuyến app tự đoán.
   const activeTrip = useSelectedTrip();
   const tripId = activeTrip.tripId;
-  const parcelsQuery = useAssistantTripParcels(tripId);
+  // Quét QR = LỌC danh sách xuống đúng kiện cầm trên tay, không phải mở popup
+  // thông tin rồi thôi. Lọc bằng `search` của backend (không lọc tay trên trang
+  // đang tải) để kiện nằm ở trang sau vẫn tìm ra.
+
+  const parcelsQuery = useAssistantTripParcels(
+    tripId,
+
+  );
   const manifest = parcelsQuery.data;
-  const items = manifest?.items ?? [];
+  const items = useMemo(() => manifest?.items ?? [], [manifest]);
   // Backend đã bật contract custody v2 chưa (API-Parcel-Driver.md §1: production
   // còn manifest cũ). Chưa bật thì ẩn hẳn nhóm custody/đối soát thay vì gọi API
   // chưa deploy rồi bắt phụ xe đọc lỗi 404.
@@ -1547,8 +1718,44 @@ export function AssistantCargoScreen() {
     stoppedHere && operational?.location?.type === "ROUTE_STOP"
       ? operational.location.id
       : null;
+  // Xe đã tới BẾN CUỐI chưa — KHÔNG được suy từ `currentOperationalLocation`.
+  // Guide (2) §C2 nói thẳng: "Do not use currentOperationalLocation for
+  // destination-station unload", và §5 liệt kê "đã rời stop cuối" là một trong
+  // các trường hợp `currentOperationalLocation = null` HỢP LỆ. Thực tế trên máy
+  // 30/08: phụ xe đã bấm "Đã tới bến cuối" nhưng operational vẫn null nên nút
+  // dỡ kiện bị khoá vĩnh viễn kèm câu "chưa phải chỗ xe đang dừng" — hàng về
+  // tới bến mà không ai dỡ được.
+  // Nguồn đúng là mốc `destinationArrivedAt` của trip detail.
+  const tripDetails = useTripDetails(tripId);
   const atDestination =
-    stoppedHere && operational?.location?.type === "DESTINATION_STATION";
+    tripDetails.data?.destinationArrivedAt != null ||
+    (stoppedHere && operational?.location?.type === "DESTINATION_STATION");
+
+  // TẠM (chẩn đoán 30/08): vì sao nút dỡ kiện vẫn khoá dù đã bấm "Đã tới bến
+  // cuối". In các đầu vào quyết định để soi trên logcat. XOÁ sau khi chốt.
+  useEffect(() => {
+    if (!__DEV__) {
+      return;
+    }
+    console.warn(
+      `[unload-gate] trip=${tripId} destinationArrivedAt=${tripDetails.data?.destinationArrivedAt ?? "null"} operational=${operational?.location?.type ?? "null"}/${operational?.status ?? "null"} departedAt=${operational?.departedAt ?? "null"} atDestination=${atDestination} items=${JSON.stringify(
+        items.map((p) => ({
+          code: p.parcelCode,
+          status: p.status,
+          dropStop: p.dropoffStopId ?? null,
+          dropType: p.dropoffLocation?.type ?? null,
+          actions: p.availableActions ?? null,
+        })),
+      )}`,
+    );
+  }, [
+    tripId,
+    tripDetails.data,
+    operational,
+    atDestination,
+
+    items,
+  ]);
   const destinationStationId =
     manifest?.tripContext?.trip?.route?.destination?.id ??
     (atDestination ? (operational?.location?.id ?? null) : null);
@@ -1558,9 +1765,15 @@ export function AssistantCargoScreen() {
   // custody tại bến đầu.
   const originLocation = manifest?.tripContext?.trip?.route?.origin ?? null;
 
-  // Quét QR dán trên kiện → tra cứu nhanh kiện thuộc chuyến đang chọn.
+  // Quét QR dán trên kiện = TRA CỨU rồi lọc card ra, đúng nhánh đầu tiên trong
+  // decision tree của Playbook v2 §6 ("Chỉ muốn tìm Parcel từ QR? → qr-scan").
+  // KHÔNG tự gọi custody-scan ở đây: §6 quy định custody-scan chỉ chạy khi
+  // backend trả action `CUSTODY_SCAN` cho chính kiện đó, và phải nằm trong menu
+  // phụ của card chứ không phải nút quét dùng chung đầu màn.
   const scanParcel = useScanParcelQr(tripId);
   const [parcelScannerOpen, setParcelScannerOpen] = useState(false);
+  // Mã gõ tay khi tem QR không đọc được.
+  const [codeDraft, setCodeDraft] = useState("");
   const handleParcelScanned = (raw: string) => {
     setParcelScannerOpen(false);
     const code = raw.trim();
@@ -1575,25 +1788,16 @@ export function AssistantCargoScreen() {
       );
       return;
     }
+    // qr-scan để xác thực kiện có thuộc chuyến này không (404 = không thuộc)
+    // và lấy parcelId — guide §A3: KHÔNG tự suy parcelId từ chuỗi QR.
     scanParcel.mutate(code, {
+      // Quét/nhập xong là kiện đang ở trên tay → mở thẳng màn chi tiết của
+      // kiện đó thay vì lọc danh sách rồi bắt phụ xe nhìn xuống tìm.
       onSuccess: (action) => {
         const state = action.parcelState;
-        const meta = parcelStatusMeta(state.status);
-        const lines = [
-          `Trạng thái: ${meta.label}`,
-          `Điểm trả: ${locationLabel(state.dropoffLocation)}`,
-        ];
-        if (action.currentCustody) {
-          lines.push(
-            `Ghi nhận cuối: ${custodyEventLabel(action.currentCustody.lastEventType)} tại ${locationLabel(action.currentCustody.lastConfirmedLocation)}`,
-          );
-        }
-        if (action.activeIncident) {
-          lines.push(
-            `⚠ Sự cố: ${incidentTypeLabel(action.activeIncident.type)} (${incidentStatusLabel(action.activeIncident.status)})`,
-          );
-        }
-        Alert.alert(`Kiện ${state.parcelCode ?? code}`, lines.join("\n"));
+        router.push(
+          `/assistant/parcel?parcelId=${state.parcelId}&parcelCode=${encodeURIComponent(state.parcelCode ?? code)}` as Href,
+        );
       },
       onError: (error) => {
         Alert.alert(
@@ -1604,22 +1808,69 @@ export function AssistantCargoScreen() {
     });
   };
 
+  // Đổi xe do sự cố: manifest route crew trả kèm kiện đang ở xe CŨ chờ bốc
+  // sang. Tách hẳn ra nhóm riêng để phụ xe không tưởng hàng đã trên xe mình.
+  const incomingItems = items.filter(
+    (parcel) =>
+      isIncomingTransfer(parcel) && canConfirmTransferHere(parcel, tripId),
+  );
+  const onboardItems = items.filter(
+    (parcel) => !incomingItems.includes(parcel),
+  );
+
+  // ===== Lọc + thu gọn danh sách =====
+  // Chuyến chục kiện thì cuộn mãi không tới nơi. Lọc theo việc đang cần làm,
+  // và danh sách chỉ hiện dạng gọn — chạm vào là sang màn chi tiết của kiện.
+  const [listFilter, setListFilter] = useState<
+    "all" | "todo" | "here" | "incident"
+  >("all");
+
+  // "Cần làm ngay" = có ít nhất một thao tác đổi trạng thái. Custody scan và
+  // xem sự cố không tính, vì chúng không đẩy kiện đi tiếp trong vòng đời.
+  const hasTodo = (parcel: AssistantParcelItem) =>
+    resolveParcelActions(parcel).some((action) =>
+      [
+        "check-in",
+        "reweigh",
+        "load",
+        "unload",
+        "deliver",
+        "confirm-delivery",
+        "confirm-transfer",
+        "confirm-found-on-vehicle",
+      ].includes(action),
+    );
+
+  // "Trả tại điểm này" = điểm trả của kiện trùng chỗ xe đang dừng.
+  const dropsHere = (parcel: AssistantParcelItem) => {
+    const dropStopId = parcel.dropoffStopId ?? parcel.dropoffLocation?.id ?? null;
+    if (currentStopId) {
+      return dropStopId === currentStopId;
+    }
+    return (
+      atDestination &&
+      (parcel.dropoffStopId == null ||
+        parcel.dropoffLocation?.type === "DESTINATION_STATION")
+    );
+  };
+
   // §11: số liệu lấy từ `summary` do backend đếm trên toàn chuyến. Contract cũ
   // không có summary thì mới tự đếm trên trang đang hiển thị.
   const summary = manifest?.summary ?? null;
-  const totalCount = summary?.total ?? items.length;
+  const totalCount = summary?.total ?? onboardItems.length;
   const loadedCount =
     summary?.loaded ??
-    items.filter((parcel) => ["LOADED", "IN_TRANSIT"].includes(parcel.status))
-      .length;
+    onboardItems.filter((parcel) =>
+      ["LOADED", "IN_TRANSIT"].includes(parcel.status),
+    ).length;
   const toDeliverCount =
     summary?.unloaded ??
-    items.filter((parcel) =>
+    onboardItems.filter((parcel) =>
       ["UNLOADED", "DELIVERED_PENDING_CONFIRM"].includes(parcel.status),
     ).length;
   const exceptionCount =
     summary?.exceptionCount ??
-    items.filter((parcel) => parcel.activeIncident != null).length;
+    onboardItems.filter((parcel) => parcel.activeIncident != null).length;
 
   return (
     <OperationsScreen
@@ -1655,27 +1906,6 @@ export function AssistantCargoScreen() {
         <>
           <TripPicker subtitle="Kiện của ca sau cần nhận tại bến trước giờ chạy." />
 
-          <SurfaceCard delay={60}>
-            <SectionTitle
-              icon="qr-code-scanner"
-              title="Tra cứu kiện"
-              subtitle="Quét mã QR dán trên kiện để xem nhanh trạng thái."
-            />
-            <ActionButton
-              icon="qr-code-scanner"
-              label={scanParcel.isPending ? "Đang tra cứu…" : "Quét QR kiện hàng"}
-              tone="secondary"
-              disabled={scanParcel.isPending}
-              onPress={() => setParcelScannerOpen(true)}
-            />
-            <QrScannerModal
-              visible={parcelScannerOpen}
-              title="Quét QR kiện hàng"
-              hint="Đưa mã QR dán trên kiện vào giữa khung."
-              onScanned={handleParcelScanned}
-              onClose={() => setParcelScannerOpen(false)}
-            />
-          </SurfaceCard>
 
           {items.length === 0 ? (
             <EmptyCard
@@ -1737,6 +1967,59 @@ export function AssistantCargoScreen() {
             ) : null}
           </SurfaceCard>
 
+          <SurfaceCard delay={60}>
+            <SectionTitle
+              icon="qr-code-scanner"
+              title="Tìm kiện"
+              subtitle="Quét mã QR dán trên kiện để lọc danh sách xuống đúng kiện đó."
+            />
+            <ActionButton
+              icon="qr-code-scanner"
+              label={scanParcel.isPending ? "Đang tra cứu…" : "Quét QR kiện hàng"}
+              tone="secondary"
+              disabled={scanParcel.isPending}
+              onPress={() => setParcelScannerOpen(true)}
+            />
+
+            {/* Nhập tay như màn Đón khách: tem rách/mờ, camera bẩn, trời tối —
+                vẫn tìm được kiện. CHỈ dùng để TRA CỨU; các bước dỡ kiện, nhận
+                kiện chuyển đến và xác nhận kiện còn trên xe vẫn bắt quét QR
+                thật vì đó là bằng chứng custody (Guide (2) §B3, §14). */}
+            <View style={styles.composerRow}>
+              <TextInput
+                autoCapitalize="characters"
+                autoCorrect={false}
+                placeholder="Hoặc nhập mã: VR-PCL-…"
+                placeholderTextColor={theme.placeholder}
+                style={styles.composerInput}
+                value={codeDraft}
+                onChangeText={setCodeDraft}
+                onSubmitEditing={() => {
+                  handleParcelScanned(codeDraft);
+                  setCodeDraft("");
+                }}
+                returnKeyType="search"
+              />
+              <ActionButton
+                label={scanParcel.isPending ? "Đang tìm…" : "Tìm"}
+                tone="primary"
+                small
+                disabled={scanParcel.isPending || codeDraft.trim().length === 0}
+                onPress={() => {
+                  handleParcelScanned(codeDraft);
+                  setCodeDraft("");
+                }}
+              />
+            </View>
+            <QrScannerModal
+              visible={parcelScannerOpen}
+              title="Quét QR kiện hàng"
+              hint="Đưa mã QR dán trên kiện vào giữa khung."
+              onScanned={handleParcelScanned}
+              onClose={() => setParcelScannerOpen(false)}
+            />
+          </SurfaceCard>
+
           {operational ? (
             <SurfaceCard delay={90}>
               <SectionTitle
@@ -1774,26 +2057,146 @@ export function AssistantCargoScreen() {
               tripId={tripId}
               stopId={currentStopId}
               stopName={locationLabel(operational?.location)}
-              items={items}
+              // Kiện chờ nhận chưa thuộc chuyến này nên không tính vào đối soát
+              // điểm dừng — đưa vào là báo thiếu oan.
+              items={onboardItems}
             />
+          ) : null}
+
+          {/* Đối soát bến cuối — bước bắt buộc trước khi hoàn tất chuyến
+              (Playbook v2 §10). Chỉ hiện khi xe đã tới bến cuối. */}
+          {custodyV2 && tripId && atDestination ? (
+            <DestinationReconcileSection tripId={tripId} />
+          ) : null}
+
+          {incomingItems.length > 0 ? (
+            <SurfaceCard delay={105}>
+              <SectionTitle
+                icon="swap-horiz"
+                title={`Hàng chờ nhận từ xe cũ (${incomingItems.length})`}
+                subtitle="Bốc lên xe xong mới bấm xác nhận."
+              />
+              {/* Dải cảnh báo: nhóm này khác hẳn danh sách thường — hàng CHƯA
+                  thuộc chuyến này, có hạn xác nhận 30 phút. Tô nổi để phụ xe
+                  không lướt qua. */}
+              <View
+                style={[
+                  styles.exceptionBanner,
+                  {
+                    backgroundColor: theme.tones.warning.background,
+                    borderColor: theme.tones.warning.border,
+                  },
+                ]}
+              >
+                <MaterialIcons
+                  name="swap-horiz"
+                  size={16}
+                  color={theme.tones.warning.text}
+                />
+                <Text
+                  style={[
+                    styles.exceptionBannerText,
+                    { color: theme.tones.warning.text },
+                  ]}
+                >
+                  Xe cũ gặp sự cố. Kiện chỉ thuộc chuyến này sau khi quét xác
+                  nhận — quá 30 phút phải nhờ điều hành.
+                </Text>
+              </View>
+              <View style={styles.listStack}>
+                {incomingItems.map((parcel) => (
+                  <ParcelCard
+                    key={parcel.parcelId}
+                    parcel={parcel}
+                    tripId={tripId}
+                    custodyV2={custodyV2}
+                    currentStopId={currentStopId}
+                    atDestination={Boolean(atDestination)}
+                    destinationStationId={destinationStationId}
+                    currentLocation={operational?.location ?? null}
+                    originLocation={originLocation}
+                  />
+                ))}
+              </View>
+            </SurfaceCard>
           ) : null}
 
           <SurfaceCard delay={120}>
             <SectionTitle icon="inventory" title="Danh sách kiện" />
+            {/* Bộ lọc: chỉ hiện khi danh sách đủ dài để cần lọc. */}
+            {onboardItems.length > 4 ? (
+              <View style={styles.filterRow}>
+                {(
+                  [
+                    ["all", "Tất cả", onboardItems.length],
+                    ["todo", "Cần làm ngay", onboardItems.filter(hasTodo).length],
+                    ["here", "Trả tại điểm này", onboardItems.filter(dropsHere).length],
+                    [
+                      "incident",
+                      "Có sự cố",
+                      onboardItems.filter((p) => p.activeIncident != null).length,
+                    ],
+                  ] as const
+                ).map(([key, label, count]) => (
+                  <Pressable
+                    key={key}
+                    accessibilityRole="button"
+                    onPress={() => setListFilter(key)}
+                    style={[
+                      styles.filterChip,
+                      listFilter === key && styles.filterChipActive,
+                    ]}
+                  >
+                    <Text
+                      style={[
+                        styles.filterChipText,
+                        listFilter === key && styles.filterChipTextActive,
+                      ]}
+                    >
+                      {label} {count}
+                    </Text>
+                  </Pressable>
+                ))}
+              </View>
+            ) : null}
+            {onboardItems.length === 0 ? (
+              <Text style={styles.parcelHint}>
+                Chuyến này chưa có kiện nào trên xe. Hàng chờ nhận từ xe cũ nằm
+                ở mục phía trên.
+              </Text>
+            ) : null}
             <View style={styles.listStack}>
-              {items.map((parcel) => (
-                <ParcelCard
-                  key={parcel.parcelId}
-                  parcel={parcel}
-                  tripId={tripId}
-                  custodyV2={custodyV2}
-                  currentStopId={currentStopId}
-                  atDestination={Boolean(atDestination)}
-                  destinationStationId={destinationStationId}
-                  currentLocation={operational?.location ?? null}
-                  originLocation={originLocation}
-                />
-              ))}
+              {onboardItems
+                .filter((parcel) =>
+                  listFilter === "todo"
+                    ? hasTodo(parcel)
+                    : listFilter === "here"
+                      ? dropsHere(parcel)
+                      : listFilter === "incident"
+                        ? parcel.activeIncident != null
+                        : true,
+                )
+                .map((parcel) => (
+                  <ParcelCard
+                    key={parcel.parcelId}
+                    parcel={parcel}
+                    tripId={tripId}
+                    custodyV2={custodyV2}
+                    currentStopId={currentStopId}
+                    atDestination={Boolean(atDestination)}
+                    destinationStationId={destinationStationId}
+                    currentLocation={operational?.location ?? null}
+                    originLocation={originLocation}
+                    // Danh sách chỉ để duyệt/tìm: luôn ở dạng gọn, chạm vào là
+                    // sang màn chi tiết — nơi có đủ thông tin và nút thao tác.
+                    expanded={false}
+                    onToggleExpand={() =>
+                      router.push(
+                        `/assistant/parcel?parcelId=${parcel.parcelId}&parcelCode=${encodeURIComponent(parcel.parcelCode)}` as Href,
+                      )
+                    }
+                  />
+                ))}
             </View>
           </SurfaceCard>
             </>
@@ -1801,6 +2204,90 @@ export function AssistantCargoScreen() {
         </>
       )}
     </OperationsScreen>
+  );
+}
+
+// Đối soát kiện tại BẾN CUỐI trước khi hoàn tất chuyến (Playbook v2 §10).
+// Không gửi body — backend tự đối chiếu custody. Còn kiện chưa xử lý thì backend
+// mở UNSCANNED_HANDOFF/SEARCHING và chỉ TÀI XẾ mới được hoàn tất chuyến.
+function DestinationReconcileSection({ tripId }: { tripId: string }) {
+  const styles = useThemedStyles(makeStyles);
+  const theme = useTheme();
+  const reconcile = useReconcileDestination(tripId);
+  const [result, setResult] = useState<DestinationReconcileData | null>(null);
+  const unresolved = result?.unresolvedParcels ?? [];
+  const errorMessage = tripOpsErrorMessage(reconcile.error);
+
+  return (
+    <SurfaceCard delay={110}>
+      <SectionTitle
+        icon="fact-check"
+        title="Đối soát tại bến cuối"
+        subtitle="Kiểm lại xem còn sót kiện nào chưa giao không."
+      />
+      <View style={styles.metaStack}>
+        {errorMessage ? (
+          <Text style={styles.errorText}>{errorMessage}</Text>
+        ) : null}
+
+        {result ? (
+          <>
+            <View style={styles.metaRow}>
+              <StatusChip
+                label={
+                  result.canComplete
+                    ? "Xong, giao đủ kiện"
+                    : "Còn kiện chưa giao"
+                }
+                tone={result.canComplete ? "success" : "danger"}
+              />
+              <Text style={[styles.metaText, styles.metaTextGrow]}>
+                Đã giao {result.scannedCount}/{result.expectedCount} kiện
+              </Text>
+            </View>
+            {unresolved.map((parcel) => (
+              <View
+                key={parcel.parcelId}
+                style={[styles.metaRow, styles.metaRowTop]}
+              >
+                <MaterialIcons
+                  name="error-outline"
+                  size={15}
+                  color={theme.danger}
+                  style={styles.metaIconTop}
+                />
+                <Text style={[styles.metaText, styles.metaTextGrow]}>
+                  {parcel.parcelCode ?? parcel.parcelId} —{" "}
+                  {incidentTypeLabel(parcel.incidentType)}.{" "}
+                  {recommendedActionLabel(parcel.recommendedAction)}
+                </Text>
+              </View>
+            ))}
+            {/* §10: còn kiện chưa xử lý thì chỉ tài xế được phân công mới hoàn
+                tất chuyến được (clearance ACKNOWLEDGED_INCIDENTS). */}
+            {result.requiresDriverCompletion ? (
+              <Text style={styles.parcelHint}>
+                Còn kiện chưa giao nên chỉ tài xế mới kết thúc chuyến được.
+                Báo tài xế trước khi rời bến.
+              </Text>
+            ) : null}
+          </>
+        ) : (
+          <Text style={[styles.metaText, styles.metaTextGrow]}>
+            Giao xong hết thì bấm kiểm. Kiện nào còn sót sẽ được mở phiếu tìm.
+          </Text>
+        )}
+
+        <ActionButton
+          icon="fact-check"
+          label={reconcile.isPending ? "Đang kiểm…" : "Kiểm lại kiện tại bến"}
+          tone="secondary"
+          small
+          disabled={reconcile.isPending}
+          onPress={() => reconcile.mutate(undefined, { onSuccess: setResult })}
+        />
+      </View>
+    </SurfaceCard>
   );
 }
 
@@ -1823,41 +2310,29 @@ function StopReconcileSection({
   const reconcile = useReconcileStop(tripId);
   const [result, setResult] = useState<StopReconcileData | null>(null);
   const [overrideReason, setOverrideReason] = useState("");
-  const [supervisorId, setSupervisorId] = useState("");
 
-  // Kiện thuộc điểm này và đã có lần ghi nhận custody TẠI ĐÚNG điểm này —
-  // backend từ chối ID nào chưa có custody event khớp (409
-  // PARCEL_CUSTODY_EVENT_NOT_FOUND) nên không khai bừa cả manifest.
+  // Chỉ dùng để hiển thị "N kiện cần trả tại đây". Playbook v2 §9: FE KHÔNG
+  // còn tự tổng hợp danh sách kiện đã quét gửi lên — backend tính từ custody
+  // event của chính nó, gửi kèm danh sách là bị từ chối vì field lạ.
   const stopParcels = items.filter(
     (parcel) =>
       (parcel.dropoffStopId ?? parcel.dropoffLocation?.id ?? null) === stopId,
   );
-  const scannedParcelIds = stopParcels
-    .filter(
-      (parcel) =>
-        parcel.activeIncident == null &&
-        parcel.currentCustody?.lastConfirmedLocation?.id === stopId,
-    )
-    .map((parcel) => parcel.parcelId);
-  const manualExceptionParcelIds = stopParcels
-    .filter((parcel) => parcel.activeIncident != null)
-    .map((parcel) => parcel.parcelId);
 
   const unresolved = result?.unresolvedParcels ?? [];
   const errorMessage = tripOpsErrorMessage(reconcile.error);
-  const overrideReady =
-    overrideReason.trim().length > 0 && supervisorId.trim().length > 0;
+  // Guide (2) §F2: chỉ cần lý do; người duyệt lấy từ JWT của tài xế.
+  const overrideReady = overrideReason.trim().length > 0;
+  const approvalRequest = result?.departureOverrideRequest ?? null;
 
   const run = (withOverride: boolean) => {
     reconcile.mutate(
       {
         stopId,
-        input: {
-          scannedParcelIds,
-          manualExceptionParcelIds,
-          departureOverrideReason: withOverride ? overrideReason.trim() : null,
-          supervisorApprovalUserId: withOverride ? supervisorId.trim() : null,
-        },
+        // Happy case gửi `{}`; chỉ khi xin rời điểm mới kèm lý do.
+        input: withOverride
+          ? { departureOverrideReason: overrideReason.trim() }
+          : {},
       },
       { onSuccess: setResult },
     );
@@ -1911,8 +2386,9 @@ function StopReconcileSection({
             {!result.canDepart ? (
               <>
                 <Text style={styles.parcelHint}>
-                  Vẫn phải chạy tiếp thì cần lý do và mã giám sát duyệt — cả hai
-                  đều bắt buộc, thiếu một cái backend vẫn chặn.
+                  Vẫn phải chạy tiếp thì ghi lý do rồi gửi. Hệ thống mở phiếu
+                  xin rời điểm để tài xế duyệt bằng tài khoản của chính mình —
+                  phụ xe không tự duyệt thay được.
                 </Text>
                 <TextInput
                   placeholder="Lý do rời điểm khi còn thiếu kiện"
@@ -1921,14 +2397,23 @@ function StopReconcileSection({
                   value={overrideReason}
                   onChangeText={setOverrideReason}
                 />
-                <TextInput
-                  placeholder="Mã người giám sát duyệt (UUID)"
-                  placeholderTextColor={theme.placeholder}
-                  autoCapitalize="none"
-                  style={styles.weighInput}
-                  value={supervisorId}
-                  onChangeText={setSupervisorId}
-                />
+                {/* Phiếu đã mở: đưa mã cho tài xế mở trên máy của họ. Endpoint
+                    duyệt chưa production-ready (§22 gap 6) nên app chỉ hiển
+                    thị, không tự gọi API duyệt. */}
+                {approvalRequest ? (
+                  <View style={styles.metaRow}>
+                    <MaterialIcons
+                      name="how-to-reg"
+                      size={15}
+                      color={theme.textSecondary}
+                    />
+                    <Text style={[styles.metaText, styles.metaTextGrow]}>
+                      Đã gửi phiếu xin rời điểm (mã{" "}
+                      {approvalRequest.requestId.slice(0, 8)}). Báo tài xế mở
+                      máy duyệt rồi mới rời bến.
+                    </Text>
+                  </View>
+                ) : null}
                 <ActionButton
                   icon="verified-user"
                   label={
@@ -1963,7 +2448,7 @@ function StopReconcileSection({
   );
 }
 
-function ParcelCard({
+export function ParcelCard({
   parcel,
   tripId,
   custodyV2,
@@ -1972,9 +2457,14 @@ function ParcelCard({
   destinationStationId,
   currentLocation,
   originLocation,
+  expanded = true,
+  onToggleExpand,
 }: {
   parcel: AssistantParcelItem;
   tripId: string;
+  // Thu gọn/bung card. Mặc định bung để các chỗ dùng khác không đổi hành vi.
+  expanded?: boolean;
+  onToggleExpand?: () => void;
   // Backend đã trả contract custody v2 (availableActions/custody/incident).
   custodyV2: boolean;
   currentStopId: string | null;
@@ -1998,8 +2488,11 @@ function ParcelCard({
   const confirmDelivery = useConfirmParcelDelivery(tripId);
   const confirmTransfer = useConfirmParcelTransfer(tripId);
   const resendEmail = useResendDeliveryEmail(tripId);
-  const custodyScan = useCustodyScan(tripId);
   const custodyException = useCustodyException(tripId);
+  const confirmFound = useConfirmFoundOnVehicle(tripId);
+  const custodyScan = useCustodyScan(tripId);
+  // Menu phụ của card (Playbook v2 §6) — mặc định đóng.
+  const [moreOpen, setMoreOpen] = useState(false);
 
   // Panel đang mở: cân lại / xác nhận giao / báo sự cố / không.
   const [mode, setMode] = useState<"none" | "reweigh" | "confirm" | "exception">(
@@ -2022,7 +2515,11 @@ function ParcelCard({
     useState<CustodyExceptionApproval | null>(null);
 
   // Quét QR bắt buộc trước khi dỡ/ghi nhận custody (§10: không có nút bỏ qua).
-  const [scanFor, setScanFor] = useState<"unload" | "custody-scan" | null>(null);
+  const [scanFor, setScanFor] = useState<
+    "unload" | "confirm-transfer" | "confirm-found" | "custody-scan" | null
+  >(
+    null,
+  );
 
   // Ảnh bằng chứng (uri cục bộ, tối đa 3) đính kèm check-in/deliver/sự cố.
   // Chỉ ASSISTANT upload được (Storage Rules), màn này vốn là màn assistant.
@@ -2044,8 +2541,10 @@ function ParcelCard({
     confirmDelivery.isPending ||
     confirmTransfer.isPending ||
     resendEmail.isPending ||
-    custodyScan.isPending ||
-    custodyException.isPending;
+
+    custodyException.isPending ||
+    confirmFound.isPending ||
+    custodyScan.isPending;
 
   const errorMessage = firstErrorMessage(
     checkIn.error,
@@ -2056,20 +2555,42 @@ function ParcelCard({
     confirmDelivery.error,
     confirmTransfer.error,
     resendEmail.error,
-    custodyScan.error,
+
     custodyException.error,
+    confirmFound.error,
+    custodyScan.error,
   );
   // 409 sai bến mang kèm expected/actual/requiredAction — hiển thị nguyên vẹn
   // thay vì chỉ một câu chung (§10).
   const mismatch = custodyLocationMismatch(unload.error);
 
-  // Điểm trả kỳ vọng của kiện: stop dọc đường, hoặc bến cuối nếu không gắn stop.
-  const expectedStopId = parcel.dropoffStopId ?? parcel.dropoffLocation?.id ?? null;
-  const unloadLocation: ParcelUnloadLocation | null = expectedStopId
-    ? { kind: "ROUTE_STOP", id: expectedStopId }
-    : destinationStationId
-      ? { kind: "DESTINATION_STATION", id: destinationStationId }
-      : null;
+  // Điểm trả KỲ VỌNG của kiện: stop dọc đường, hoặc bến cuối nếu không gắn stop.
+  // Chỉ dùng để quyết định có bật nút dỡ hay không, KHÔNG gửi lên backend.
+  // Phân loại theo `dropoffLocation.type`, KHÔNG suy từ "có id là route stop".
+  // Kiện trả tại bến cuối có `dropoffStopId = null` nhưng `dropoffLocation` lại
+  // mang id của bến — bản cũ vơ luôn id đó vào nhánh ROUTE_STOP, rồi so với
+  // `currentStopId` (luôn null ở bến cuối) nên nút dỡ không bao giờ bật.
+  const unloadLocation: ParcelUnloadLocation | null = parcel.dropoffStopId
+    ? { kind: "ROUTE_STOP", id: parcel.dropoffStopId }
+    : parcel.dropoffLocation?.type === "ROUTE_STOP" &&
+        parcel.dropoffLocation.id
+      ? { kind: "ROUTE_STOP", id: parcel.dropoffLocation.id }
+      : parcel.dropoffLocation?.type === "DESTINATION_STATION" &&
+          parcel.dropoffLocation.id
+        ? { kind: "DESTINATION_STATION", id: parcel.dropoffLocation.id }
+        : destinationStationId
+          ? { kind: "DESTINATION_STATION", id: destinationStationId }
+          : null;
+  // Vị trí THỰC TẾ của xe lúc dỡ — đây mới là thứ gửi trong `actualLocation`
+  // (guide (2) §B3: id phải là `currentOperationalLocation.location.id`).
+  // Gửi điểm kỳ vọng vào đây thì expected luôn bằng actual, backend mất khả
+  // năng phát hiện dỡ sai bến (409 PARCEL_CUSTODY_LOCATION_MISMATCH).
+  const actualUnloadLocation: ParcelUnloadLocation | null =
+    currentLocation?.type === "ROUTE_STOP" && currentStopId
+      ? { kind: "ROUTE_STOP", id: currentStopId }
+      : atDestination && destinationStationId
+        ? { kind: "DESTINATION_STATION", id: destinationStationId }
+        : null;
   // §10 bước 3: chỉ bật nút dỡ khi điểm trả của kiện trùng vị trí xe đang dừng.
   const unloadHere = !custodyV2
     ? true
@@ -2117,11 +2638,17 @@ function ParcelCard({
       return null;
     }
 
+    // Ma trận event của Playbook v2 §6:
+    //   ACCEPTED         — bến đầu, TRƯỚC khi load;
+    //   ARRIVED_AT_STOP  — điểm dừng đang ARRIVED;
+    //   HANDOFF          — bàn giao tại stop/bến hiện tại của chuyến.
+    // RETURNED_TO_STATION dành cho luồng hoàn hàng, KHÔNG dùng cho việc bàn
+    // giao ở bến cuối — gửi sai event là backend từ chối.
     const eventType: ParcelCustodyScanEvent =
       source.type === "ORIGIN_STATION"
         ? "ACCEPTED"
         : source.type === "DESTINATION_STATION"
-          ? "RETURNED_TO_STATION"
+          ? "HANDOFF"
           : "ARRIVED_AT_STOP";
 
     return {
@@ -2146,25 +2673,6 @@ function ParcelCard({
       return;
     }
 
-    if (target === "unload") {
-      if (!unloadLocation) {
-        Alert.alert(
-          "Chưa xác định được điểm trả",
-          "Kiện không gắn điểm dừng và chuyến chưa có bến cuối trong dữ liệu. Tải lại danh sách rồi thử lại.",
-        );
-        return;
-      }
-      unload.mutate({
-        parcelId: parcel.parcelId,
-        input: {
-          parcelCode: parcel.parcelCode,
-          actualLocation: unloadLocation,
-          photoUrls: [],
-        },
-      });
-      return;
-    }
-
     if (target === "custody-scan") {
       const here = custodyScanTarget();
       if (!here) {
@@ -2186,7 +2694,58 @@ function ParcelCard({
           reason: null,
         },
       });
+      return;
     }
+
+    if (target === "confirm-found") {
+      const incidentId = parcel.activeIncident?.incidentId;
+      if (!incidentId) {
+        Alert.alert(
+          "Kiện không còn phiếu tìm kiếm",
+          "Sự cố đã được xử lý ở nơi khác. Tải lại danh sách để xem trạng thái mới.",
+        );
+        return;
+      }
+      confirmFound.mutate({
+        parcelId: parcel.parcelId,
+        input: {
+          incidentId,
+          parcelCode: parcel.parcelCode,
+          evidenceReferences: [],
+          note: null,
+        },
+      });
+      return;
+    }
+
+    if (target === "confirm-transfer") {
+      confirmTransfer.mutate({
+        parcelId: parcel.parcelId,
+        parcelCode: parcel.parcelCode,
+      });
+      return;
+    }
+
+    if (target === "unload") {
+      if (!actualUnloadLocation) {
+        Alert.alert(
+          "Xe chưa dừng ở điểm nào",
+          "Chỉ dỡ kiện khi xe đã tới điểm dừng và chưa rời đi. Chờ tài xế báo tới nơi rồi thử lại.",
+        );
+        return;
+      }
+      unload.mutate({
+        parcelId: parcel.parcelId,
+        input: {
+          parcelCode: parcel.parcelCode,
+          // Vị trí THỰC TẾ của xe, không phải điểm trả kỳ vọng của kiện.
+          actualLocation: actualUnloadLocation,
+          photoUrls: [],
+        },
+      });
+      return;
+    }
+
   };
 
   // Check-in/deliver/sự cố kèm ảnh: upload trước (nếu có), lỗi upload thì dừng
@@ -2295,22 +2854,71 @@ function ParcelCard({
   const identityPhoto = hints?.photoUrl ?? parcel.photoUrl;
   const description = hints?.description ?? parcel.description;
 
+  // Chuyến chục kiện thì card đầy đủ cuộn mãi không hết — mặc định thu gọn,
+  // chạm vào mới bung. Phần đầu (mã, người nhận, trạng thái, điểm trả) luôn
+  // hiện vì đó là thứ phụ xe quét mắt để tìm kiện.
+  const header = (
+    <View style={styles.parcelTitleStack}>
+      {/* Mã kiện chiếm trọn một dòng: 24 ký tự mono mà bị chip chen ngang
+          thì gãy đôi, phụ xe dễ đọc nhầm khi đối chiếu tem. */}
+      <Text style={styles.parcelCode} numberOfLines={1}>
+        {parcel.parcelCode}
+      </Text>
+      {/* Tên và số điện thoại tách hai dòng. Gộp một dòng thì tên dài + số
+          E.164 đẩy nhau gãy làm ba, chip trạng thái bị ép còn một mẩu. */}
+      <View style={styles.parcelHeader}>
+        <View style={styles.parcelPeopleBlock}>
+          <Text style={styles.parcelPeople} numberOfLines={1}>
+            {parcel.recipientName ?? "—"}
+          </Text>
+          {parcel.recipientPhone ? (
+            <Text style={styles.parcelPhone} numberOfLines={1}>
+              {formatPhone(parcel.recipientPhone)}
+            </Text>
+          ) : null}
+        </View>
+        <StatusChip label={statusMeta.label} tone={statusMeta.tone} />
+      </View>
+    </View>
+  );
+
+  if (!expanded) {
+    return (
+      <Pressable
+        accessibilityRole="button"
+        onPress={onToggleExpand}
+        style={styles.parcelCard}
+      >
+        {header}
+        <View style={styles.metaRow}>
+          <MaterialIcons name="place" size={15} color={theme.textSecondary} />
+          <Text style={[styles.metaText, styles.metaTextGrow]} numberOfLines={1}>
+            {locationLabel(parcel.dropoffLocation)}
+          </Text>
+          {/* Có sự cố thì phải thấy ngay ở dạng thu gọn, không bắt bung ra mới
+              biết kiện đang có vấn đề. */}
+          {incident ? (
+            <MaterialIcons
+              name="report-problem"
+              size={16}
+              color={theme.danger}
+            />
+          ) : null}
+          <MaterialIcons
+            name="expand-more"
+            size={18}
+            color={theme.textSecondary}
+          />
+        </View>
+      </Pressable>
+    );
+  }
+
   return (
     <View style={styles.parcelCard}>
-      <View style={styles.parcelTitleStack}>
-        {/* Mã kiện chiếm trọn một dòng: 24 ký tự mono mà bị chip chen ngang
-            thì gãy đôi, phụ xe dễ đọc nhầm khi đối chiếu tem. */}
-        <Text style={styles.parcelCode} numberOfLines={1}>
-          {parcel.parcelCode}
-        </Text>
-        <View style={styles.parcelHeader}>
-          <Text style={[styles.parcelPeople, styles.metaTextGrow]}>
-            {parcel.recipientName ?? "—"}
-            {parcel.recipientPhone ? ` • ${parcel.recipientPhone}` : ""}
-          </Text>
-          <StatusChip label={statusMeta.label} tone={statusMeta.tone} />
-        </View>
-      </View>
+      <Pressable accessibilityRole="button" onPress={onToggleExpand}>
+        {header}
+      </Pressable>
 
       {/* Sự cố đang mở: kiện đang do điều hành xử lý, không thao tác bừa. */}
       {incident ? (
@@ -2393,8 +3001,8 @@ function ParcelCard({
               color={theme.textSecondary}
             />
             <Text style={[styles.metaText, styles.metaTextGrow]}>
-              {custodyEventLabel(custody.lastEventType)} tại{" "}
-              {locationLabel(custody.lastConfirmedLocation)}
+              {custodyEventLabel(custody.lastEventType)}{" "}
+              {locationPhrase(custody.lastConfirmedLocation)}
               {custody.lastConfirmedAt
                 ? ` • ${formatTimeHM(custody.lastConfirmedAt)}`
                 : ""}
@@ -2425,6 +3033,56 @@ function ParcelCard({
               {parcel.finalPaymentDeadline
                 ? ` • hạn ${formatTimeHM(parcel.finalPaymentDeadline)}`
                 : ""}
+            </Text>
+          </View>
+        ) : null}
+        {/* Đổi xe do sự cố: kiện vẫn thuộc chuyến cũ cho tới khi xác nhận
+            (FE-MOBILE-VEHICLE-SUBSTITUTION-PARCEL-TRANSFER.md). Nói rõ để phụ
+            xe không tưởng hàng đã nằm sẵn trên xe mới. */}
+        {parcel.status === "PENDING_TRANSFER_CONFIRM" ? (
+          <View style={[styles.metaRow, styles.metaRowTop]}>
+            <MaterialIcons
+              name="swap-horiz"
+              size={15}
+              color={theme.textSecondary}
+              style={styles.metaIconTop}
+            />
+            {/* Câu ngắn: dải cảnh báo của nhóm "Hàng chờ nhận từ xe cũ" đã nói
+                đủ ngữ cảnh, lặp lại nguyên đoạn trên từng card làm card dài
+                gấp đôi mà không thêm thông tin gì. */}
+            <Text style={[styles.metaText, styles.metaTextGrow]}>
+              Chuyển từ xe gặp sự cố — quét xác nhận sau khi đã bốc lên xe.
+            </Text>
+          </View>
+        ) : null}
+        {/* REJECTED gần như luôn là "quá hạn nhận kiện tại bến" (backend tự
+            chuyển RESERVED → REJECTED khi qua latestCheckInAt = trước giờ chạy
+            30 phút). Nói rõ để phụ xe khỏi tưởng app lỗi hay tự đi tìm nút. */}
+        {parcel.status === "REJECTED" ? (
+          <View style={[styles.metaRow, styles.metaRowTop]}>
+            <MaterialIcons
+              name="block"
+              size={15}
+              color={theme.textSecondary}
+              style={styles.metaIconTop}
+            />
+            <Text style={[styles.metaText, styles.metaTextGrow]}>
+              Kiện không được nhận tại bến trước giờ chốt nên hệ thống đã từ
+              chối. Không xếp lên xe; khách liên hệ điều hành nếu cần gửi lại.
+            </Text>
+          </View>
+        ) : null}
+        {parcel.status === "TRANSFER_ESCALATED" ? (
+          <View style={[styles.metaRow, styles.metaRowTop]}>
+            <MaterialIcons
+              name="report-problem"
+              size={15}
+              color={theme.textSecondary}
+              style={styles.metaIconTop}
+            />
+            <Text style={[styles.metaText, styles.metaTextGrow]}>
+              Đã quá hạn xác nhận chuyển kiện sang xe mới. Liên hệ điều hành để
+              xử lý, không thao tác tiếp trên app.
             </Text>
           </View>
         ) : null}
@@ -2552,6 +3210,9 @@ function ParcelCard({
             style={styles.weighInput}
             value={note}
             onChangeText={setNote}
+            // Guide (2) §16: confirmNote tối đa 500 ký tự — chặn ngay ở ô nhập
+            // thay vì để phụ xe gõ xong mới ăn 422.
+            maxLength={500}
           />
           <View style={styles.segmentRow}>
             <ActionButton
@@ -2607,35 +3268,18 @@ function ParcelCard({
             value={exceptionNote}
             onChangeText={setExceptionNote}
           />
-          <View style={styles.evidenceRow}>
-            {evidenceUris.map((uri) => (
-              <Pressable
-                key={uri}
-                accessibilityRole="button"
-                onPress={() =>
-                  setEvidenceUris((current) =>
-                    current.filter((item) => item !== uri),
-                  )
-                }
-              >
-                <Image source={{ uri }} style={styles.evidenceThumb} />
-              </Pressable>
-            ))}
-            <View style={styles.evidenceButtonWrap}>
-              <ActionButton
-                icon="photo-camera"
-                label={`Ảnh hiện trường (${evidenceUris.length}/${MAX_EVIDENCE_PHOTOS})`}
-                tone="ghost"
-                small
-                disabled={
-                  busy ||
-                  uploadingEvidence ||
-                  evidenceUris.length >= MAX_EVIDENCE_PHOTOS
-                }
-                onPress={() => setEvidenceCameraOpen(true)}
-              />
-            </View>
-          </View>
+          <EvidencePicker
+            uris={evidenceUris}
+            max={MAX_EVIDENCE_PHOTOS}
+            label="Ảnh hiện trường"
+            disabled={busy || uploadingEvidence}
+            onAdd={() => setEvidenceCameraOpen(true)}
+            onRemove={(uri) =>
+              setEvidenceUris((current) =>
+                current.filter((item) => item !== uri),
+              )
+            }
+          />
           <Text style={styles.parcelHint}>
             Gửi xong báo cáo sẽ chờ tài xế hoặc điều hành phê duyệt. Chỉ khi
             được duyệt hệ thống mới mở phiếu tìm kiếm. Không gửi trùng nếu kiện
@@ -2672,40 +3316,18 @@ function ParcelCard({
         <View style={styles.parcelActionStack}>
           {actions.includes("check-in") || actions.includes("deliver") ? (
             <>
-              <View style={styles.evidenceRow}>
-                {evidenceUris.map((uri) => (
-                  <Pressable
-                    key={uri}
-                    accessibilityRole="button"
-                    onPress={() =>
-                      setEvidenceUris((current) =>
-                        current.filter((item) => item !== uri),
-                      )
-                    }
-                  >
-                    <Image source={{ uri }} style={styles.evidenceThumb} />
-                  </Pressable>
-                ))}
-                {/* Bọc flex:1 để nút giãn hết phần ngang còn lại,
-                    rộng bằng các nút khác trong card. */}
-                <View style={styles.evidenceButtonWrap}>
-                  <ActionButton
-                    icon="photo-camera"
-                    label={`Ảnh bằng chứng (${evidenceUris.length}/${MAX_EVIDENCE_PHOTOS})`}
-                    tone="ghost"
-                    small
-                    disabled={
-                      busy ||
-                      uploadingEvidence ||
-                      evidenceUris.length >= MAX_EVIDENCE_PHOTOS
-                    }
-                    onPress={() => setEvidenceCameraOpen(true)}
-                  />
-                </View>
-              </View>
-              {evidenceUris.length > 0 ? (
-                <Text style={styles.parcelHint}>Chạm vào ảnh để xoá.</Text>
-              ) : null}
+              <EvidencePicker
+                uris={evidenceUris}
+                max={MAX_EVIDENCE_PHOTOS}
+                label="Ảnh bằng chứng"
+                disabled={busy || uploadingEvidence}
+                onAdd={() => setEvidenceCameraOpen(true)}
+                onRemove={(uri) =>
+                  setEvidenceUris((current) =>
+                    current.filter((item) => item !== uri),
+                  )
+                }
+              />
             </>
           ) : null}
           {actions.includes("check-in") ? (
@@ -2808,7 +3430,10 @@ function ParcelCard({
               onPress={() => setMode("confirm")}
             />
           ) : null}
-          {actions.includes("confirm-transfer") ? (
+          {/* Chỉ crew chuyến ĐÍCH được xác nhận — crew chuyến cũ mở cùng kiện
+              thì không thấy nút (doc §Manifest của crew mới). */}
+          {actions.includes("confirm-transfer") &&
+          canConfirmTransferHere(parcel, tripId) ? (
             <ActionButton
               icon="swap-horiz"
               label={
@@ -2819,12 +3444,10 @@ function ParcelCard({
               tone="primary"
               small
               disabled={busy}
-              onPress={() =>
-                confirmTransfer.mutate({
-                  parcelId: parcel.parcelId,
-                  parcelCode: parcel.parcelCode,
-                })
-              }
+              // Guide (2) §14: crew chuyến đích QUÉT QR THẬT trên kiện rồi mới
+              // xác nhận — mã quét phải khớp phiếu chuyển. Hỏi miệng không đủ:
+              // xác nhận xong backend đổi tripId và không hoàn tác được.
+              onPress={() => setScanFor("confirm-transfer")}
             />
           ) : null}
           {actions.includes("resend-email") ? (
@@ -2846,16 +3469,24 @@ function ParcelCard({
               }
             />
           ) : null}
-          {actions.includes("custody-scan") ? (
+          {/* Ghi nhận vị trí đã gộp về nút "Quét QR kiện hàng" đầu màn: quét
+              một phát là ghi nhận luôn, không bắt tìm card rồi bấm thêm. Card
+              chỉ còn các bước đổi trạng thái của vòng đời kiện. */}
+          {/* Kiện bị mở phiếu tìm kiếm nhưng thực ra vẫn nằm trên xe. Đây là
+              đường DUY NHẤT để crew gỡ kiện khỏi PENDING_OPERATOR_ACTION mà
+              không phải nhờ điều hành (Playbook v2 §8) → để primary. */}
+          {actions.includes("confirm-found-on-vehicle") ? (
             <ActionButton
-              icon="qr-code-scanner"
+              icon="inventory"
               label={
-                custodyScan.isPending ? "Đang ghi nhận…" : "Quét ghi nhận vị trí"
+                confirmFound.isPending
+                  ? "Đang xác nhận…"
+                  : "Kiện vẫn trên xe — xác nhận"
               }
-              tone="secondary"
+              tone="primary"
               small
               disabled={busy}
-              onPress={() => setScanFor("custody-scan")}
+              onPress={() => setScanFor("confirm-found")}
             />
           ) : null}
           {actions.includes("custody-exception") ? (
@@ -2872,6 +3503,41 @@ function ParcelCard({
               onPress={() => setMode("exception")}
             />
           ) : null}
+          {/* Menu phụ: Playbook v2 §6 cấm đặt "Ghi nhận bàn giao/vị trí" cạnh
+              nút nghiệp vụ chính (Xếp/Dỡ) vì phụ xe hay bấm nhầm nó thay cho
+              thao tác thật. Gấp lại, chỉ mở khi cần ghi nhận bổ sung. */}
+          {actions.includes("custody-scan") ? (
+            moreOpen ? (
+              <>
+                <ActionButton
+                  icon="qr-code-scanner"
+                  label={
+                    custodyScan.isPending
+                      ? "Đang ghi nhận…"
+                      : "Ghi nhận bàn giao/vị trí"
+                  }
+                  tone="ghost"
+                  small
+                  disabled={busy}
+                  onPress={() => setScanFor("custody-scan")}
+                />
+                <Text style={styles.parcelHint}>
+                  Chỉ dùng khi cần ghi thêm một mốc bàn giao thật (giao cho nhân
+                  viên bến, kiểm kê dọc đường). Nhận kiện, xếp, dỡ và giao đã tự
+                  ghi nhận rồi.
+                </Text>
+              </>
+            ) : (
+              <ActionButton
+                icon="more-horiz"
+                label="Thêm thao tác"
+                tone="ghost"
+                small
+                disabled={busy}
+                onPress={() => setMoreOpen(true)}
+              />
+            )
+          ) : null}
           {actions.length === 0 ? (
             <Text style={styles.parcelHint}>
               Không có thao tác cho trạng thái hiện tại.
@@ -2884,6 +3550,8 @@ function ParcelCard({
       <EvidenceCameraModal
         visible={evidenceCameraOpen}
         title={`Chụp ảnh bằng chứng • ${parcel.parcelCode}`}
+        count={evidenceUris.length}
+        max={MAX_EVIDENCE_PHOTOS}
         onCaptured={(uri) => {
           setEvidenceUris((current) => {
             if (current.length >= MAX_EVIDENCE_PHOTOS) {
@@ -2901,7 +3569,11 @@ function ParcelCard({
       <QrScannerModal
         visible={scanFor != null}
         title={`Quét QR • ${parcel.parcelCode}`}
-        hint="Quét đúng tem trên kiện đang cầm trên tay."
+        hint={
+          scanFor === "confirm-transfer"
+            ? "Kiện đã bốc lên xe rồi thì quét tem để xác nhận nhận hàng."
+            : "Quét đúng tem trên kiện đang cầm trên tay."
+        }
         onScanned={handleScanned}
         onClose={() => setScanFor(null)}
       />
@@ -2918,15 +3590,47 @@ export function AssistantStopsScreen() {
   const details = detailsQuery.data;
 
   const arriveStop = useArriveAtStop(tripId);
+  const departStop = useDepartFromStop(tripId);
   const arriveDestination = useArriveAtDestination(tripId);
 
   const tripRunning =
     normalizeTripStatus(activeTrip.trip?.status) === "IN_PROGRESS";
-  const busy = arriveStop.isPending || arriveDestination.isPending;
+  const busy =
+    arriveStop.isPending || departStop.isPending || arriveDestination.isPending;
   const errorMessage = firstErrorMessage(
     arriveStop.error,
+    departStop.error,
     arriveDestination.error,
   );
+  // Rời điểm bị Parcel service chặn vì còn kiện chưa đối soát: backend gửi kèm
+  // `approvalRequestId` để mở đúng phiếu phụ xe đã tạo (Guide (2) §F5).
+  const blockedApprovalId = stopDepartureBlocked(departStop.error);
+
+  // Điểm đã chốt rời trong phiên này. Cần state riêng vì backend có thể chưa
+  // trả `actualDepartureTime` trong trip detail — không có nó thì nút "Rời
+  // điểm" cứ đứng nguyên sau khi bấm, trông như không có gì xảy ra và tài xế
+  // bấm lại sẽ ăn 409 TRIP_STOP_ALREADY_DEPARTED.
+  const [departedStopIds, setDepartedStopIds] = useState<string[]>([]);
+  const markDeparted = (stopId: string) =>
+    setDepartedStopIds((current) =>
+      current.includes(stopId) ? current : [...current, stopId],
+    );
+
+  const handleDepart = (stopId: string) => {
+    departStop.mutate(stopId, {
+      onSuccess: () => {
+        markDeparted(stopId);
+        void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+      },
+      onError: (error) => {
+        // Đã chốt từ trước (bấm hai lần, hoặc phụ xe/hệ thống chốt hộ) thì coi
+        // như xong: ẩn nút đi thay vì bắt tài xế đọc lỗi.
+        if (error instanceof ApiError && error.code === "TRIP_STOP_ALREADY_DEPARTED") {
+          markDeparted(stopId);
+        }
+      },
+    });
+  };
 
   const arrivedAtDestination = details?.destinationArrivedAt != null;
 
@@ -3089,9 +3793,39 @@ export function AssistantStopsScreen() {
             liveEtas={liveStopEtas}
             attentionStopId={showArrivalPrompt ? arrivalPromptStopId : null}
             onArrive={(stopId) => arriveStop.mutate(stopId)}
+            onDepart={handleDepart}
+            departedStopIds={departedStopIds}
             actionDisabled={!tripRunning || busy}
-            pendingStopId={arriveStop.isPending ? arriveStop.variables : null}
+            pendingStopId={
+              arriveStop.isPending
+                ? arriveStop.variables
+                : departStop.isPending
+                  ? departStop.variables
+                  : null
+            }
           />
+
+          {/* Parcel service chặn rời điểm khi còn kiện chưa đối soát. Mở đúng
+              phiếu phụ xe đã tạo, KHÔNG tự dựng phê duyệt cục bộ (§19). */}
+          {blockedApprovalId ? (
+            <SurfaceCard delay={150}>
+              <SectionTitle
+                icon="pending-actions"
+                title="Chưa rời điểm được"
+                subtitle="Phụ xe đã xin rời điểm khi còn kiện thiếu — cần tài xế duyệt."
+              />
+              <ActionButton
+                icon="how-to-reg"
+                label="Mở phiếu xin rời điểm"
+                tone="primary"
+                onPress={() =>
+                  router.push(
+                    `/driver/parcel-approval?requestId=${blockedApprovalId}` as Href,
+                  )
+                }
+              />
+            </SurfaceCard>
+          ) : null}
 
           <SurfaceCard delay={180}>
             <SectionTitle
@@ -4109,6 +4843,8 @@ function TripStopsCard({
   liveEtas,
   attentionStopId = null,
   onArrive,
+  onDepart,
+  departedStopIds = [],
   actionDisabled = false,
   pendingStopId = null,
 }: {
@@ -4118,6 +4854,10 @@ function TripStopsCard({
   // Stop server báo xe đã tới gần → nhấn mạnh để crew bấm xác nhận.
   attentionStopId?: string | null;
   onArrive?: (stopId: string) => void;
+  // Rời điểm — chỉ hiện sau khi đã tới điểm đó (Guide (2) §B6).
+  onDepart?: (stopId: string) => void;
+  // Điểm vừa chốt rời trong phiên này (backend detail có thể chưa trả mốc rời).
+  departedStopIds?: string[];
   actionDisabled?: boolean;
   pendingStopId?: string | null;
 }) {
@@ -4165,6 +4905,9 @@ function TripStopsCard({
 
         {stops.map((stop) => {
           const arrived = stop.status === "ARRIVED";
+          const stopDeparted =
+            stop.actualDepartureTime != null ||
+            departedStopIds.includes(stop.stopId);
           const skipped = stop.status === "SKIPPED";
           // Điểm đã chốt (đến hoặc bỏ qua) thì không còn thao tác.
           const finalized = arrived || skipped;
@@ -4254,6 +4997,33 @@ function TripStopsCard({
                     disabled={actionDisabled}
                     onPress={() => onArrive(stop.stopId)}
                   />
+                ) : null}
+
+                {/* Đã tới điểm này rồi mới rời được. Phụ xe phải đối soát xong
+                    kiện, nếu không backend chặn bằng
+                    PARCEL_STOP_RECONCILIATION_REQUIRED. Chốt xong thì đổi
+                    thành dòng trạng thái — nút biến mất để không bấm lần hai. */}
+                {onDepart && arrived ? (
+                  stopDeparted ? (
+                    <Text style={styles.stopMeta}>
+                      {stop.actualDepartureTime
+                        ? `Đã rời điểm lúc ${formatTimeHM(stop.actualDepartureTime)}`
+                        : "Đã chốt rời điểm này"}
+                    </Text>
+                  ) : (
+                    <ActionButton
+                      icon="logout"
+                      label={
+                        pendingStopId === stop.stopId
+                          ? "Đang ghi nhận…"
+                          : "Rời điểm này"
+                      }
+                      tone="secondary"
+                      small
+                      disabled={actionDisabled}
+                      onPress={() => onDepart(stop.stopId)}
+                    />
+                  )
                 ) : null}
               </View>
             </View>
@@ -4711,8 +5481,70 @@ const makeStyles = (c: Palette) =>
     padding: Spacing.three,
     gap: Spacing.two,
   },
+  // Bảng trượt từ dưới lên cho thông tin ghế.
+  sheetScrim: {
+    ...StyleSheet.absoluteFill,
+    backgroundColor: c.scrim,
+  },
+  sheet: {
+    backgroundColor: c.panel,
+    borderTopLeftRadius: 24,
+    borderTopRightRadius: 24,
+    bottom: 0,
+    gap: Spacing.three,
+    left: 0,
+    padding: Spacing.four,
+    paddingBottom: Spacing.five,
+    position: "absolute",
+    right: 0,
+  },
+  sheetHandle: {
+    alignSelf: "center",
+    backgroundColor: c.border,
+    borderRadius: 999,
+    height: 4,
+    width: 44,
+  },
+  sheetHeader: {
+    alignItems: "center",
+    flexDirection: "row",
+    gap: Spacing.two,
+    justifyContent: "space-between",
+  },
+  sheetTitle: {
+    color: c.text,
+    fontFamily: Fonts.rounded,
+    fontSize: 20,
+    fontWeight: 700,
+  },
   listStack: {
     gap: Spacing.three,
+  },
+  // Chip lọc danh sách kiện — xuống dòng được vì nhãn tiếng Việt khá dài.
+  filterRow: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: Spacing.two,
+    marginBottom: Spacing.two,
+  },
+  filterChip: {
+    borderColor: c.border,
+    borderRadius: 999,
+    borderWidth: StyleSheet.hairlineWidth,
+    paddingHorizontal: Spacing.three,
+    paddingVertical: 6,
+  },
+  filterChipActive: {
+    backgroundColor: c.primary,
+    borderColor: c.primary,
+  },
+  filterChipText: {
+    color: c.textSecondary,
+    fontSize: 12,
+    fontWeight: 600,
+  },
+  filterChipTextActive: {
+    color: c.onAccent,
   },
   passengerTopRow: {
     flexDirection: "row",
@@ -4871,11 +5703,26 @@ const makeStyles = (c: Palette) =>
     fontFamily: Fonts.mono,
     fontSize: 13,
   },
+  // Khối tên + số điện thoại người nhận. flexShrink để chip trạng thái luôn
+  // giữ đủ chỗ, tên dài thì cắt bằng "…" chứ không đẩy chip vỡ hàng.
+  parcelPeopleBlock: {
+    flex: 1,
+    flexShrink: 1,
+    gap: 2,
+  },
   parcelPeople: {
     color: c.text,
     fontFamily: Fonts.rounded,
     fontSize: 17,
     fontWeight: 700,
+  },
+  parcelPhone: {
+    color: c.textSecondary,
+    fontSize: 13,
+    // Số điện thoại dạng bảng: các chữ số cùng bề rộng nên nhóm 4-3-3 thẳng
+    // hàng, quét mắt lúc bấm gọi nhanh hơn.
+    fontVariant: ["tabular-nums"],
+    letterSpacing: 0.3,
   },
   metaStack: {
     gap: 6,

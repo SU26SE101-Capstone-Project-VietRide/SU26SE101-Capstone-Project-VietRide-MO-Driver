@@ -350,5 +350,20 @@ async function requestInternal<T>(
   }
 
   const envelope = await parseEnvelope<T>(response);
-  return unwrap(envelope, response.status);
+  try {
+    return unwrap(envelope, response.status);
+  } catch (error) {
+    // Ở dev in nguyên method/path + mã lỗi + `fields` backend chỉ ra field nào
+    // sai. Câu tiếng Việt trên màn hình cố tình chung chung nên khi đại ca báo
+    // "dữ liệu không hợp lệ" thì đây là chỗ duy nhất truy được nguyên nhân.
+    if (__DEV__ && error instanceof ApiError) {
+      const fields = error.fields?.length
+        ? ` fields=${JSON.stringify(error.fields)}`
+        : "";
+      console.warn(
+        `[api] ${method} ${path} → ${error.statusCode} ${error.code}${fields} trace=${error.traceId ?? "n/a"}`,
+      );
+    }
+    throw error;
+  }
 }

@@ -175,6 +175,28 @@ export function RouteMapScreen() {
         </View>
       ) : null}
 
+      {/* Chuyến chưa chạy (kể cả xe thay thế vừa được gán sau sự cố) thì KHÔNG
+          bám vị trí và cũng không vẽ điểm xe giả lên tuyến — nói thẳng là đang
+          chờ, để crew không tưởng bản đồ hỏng
+          (MOBILE-VEHICLE-SUBSTITUTION-PARCEL-TRANSFER.md §Tracking). */}
+      {!tripInProgress && routeQuery.data ? (
+        <View
+          style={[
+            styles.statusBar,
+            { bottom: Math.max(insets.bottom, Spacing.three) },
+          ]}
+        >
+          <MaterialIcons
+            name="schedule"
+            size={16}
+            color={theme.textSecondary}
+          />
+          <Text style={styles.statusNext} numberOfLines={2}>
+            Chuyến chưa bắt đầu — chưa theo dõi được vị trí xe.
+          </Text>
+        </View>
+      ) : null}
+
       {/* Chuyến terminal thì đóng banner ngay — BE cố ý không phát
           ROUTE_RESTORED khi trip kết thúc (FE-RESPONSE-route-deviation §6). */}
       {deviation && tripInProgress ? (

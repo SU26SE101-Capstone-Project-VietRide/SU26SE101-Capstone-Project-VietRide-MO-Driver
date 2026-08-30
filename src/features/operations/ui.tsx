@@ -18,6 +18,7 @@ import {
     ScrollView,
     StyleSheet,
     Text,
+    TextInput,
     View,
     type ViewStyle,
 } from "react-native";
@@ -80,19 +81,51 @@ export function OperationsScreen({
   // chiều cao bàn phím vào padding đáy thì nội dung mới cuộn lên trên nó được.
   const [keyboardHeight, setKeyboardHeight] = useState(0);
 
-  // Giữ ô đang gõ nằm trên bàn phím. Xử lý ngay tại đây thay vì để từng màn tự
-  // lo: các form đều đặt ô nhập ở cuối nội dung nên cuộn xuống đáy là đủ.
+  // Vị trí cuộn hiện tại + chiều cao bàn phím, giữ trong ref để tính toán mà
+  // không kích hoạt render lại giữa lúc đang gõ.
+  const scrollY = useRef(0);
+  const keyboardTop = useRef(Number.POSITIVE_INFINITY);
+
+  // Giữ ô ĐANG GÕ nằm trên bàn phím.
+  //
+  // Bản cũ luôn `scrollToEnd()` với giả định "form nào cũng nằm cuối màn". Giả
+  // định đó sai ở màn Hàng hoá: panel cân/đo nằm trong card giữa danh sách, nên
+  // mỗi lần gõ là màn nhảy xuống tận cuối danh sách, ô nhập biến mất khỏi tầm
+  // mắt. Giờ đo đúng ô đang focus rồi chỉ cuộn vừa đủ để nó nổi trên bàn phím.
   const keepInputVisible = useCallback(() => {
     // Chỉ cuộn khi bàn phím đang mở (bàn phím mở ⇒ đang gõ ở đâu đó), tránh
     // giật màn khi nội dung đổi vì lý do khác — query trả về, card mở rộng…
     if (!keyboardOpen.current) {
       return;
     }
-    // Hai nhịp, không animate: gõ nhanh thì các animation chồng lên nhau và bị
-    // cắt ngang giữa chừng nên luôn hụt mất một dòng. Nhịp 300ms bù cho lúc
-    // layout chưa kịp co theo bàn phím.
-    setTimeout(() => scrollRef.current?.scrollToEnd({ animated: false }), 50);
-    setTimeout(() => scrollRef.current?.scrollToEnd({ animated: false }), 300);
+
+    const focused = TextInput.State.currentlyFocusedInput();
+    if (!focused) {
+      // Không xác định được ô nào đang gõ (bàn phím của WebView, ô ngoài
+      // ScrollView…) → giữ hành vi cũ cho chắc.
+      setTimeout(() => scrollRef.current?.scrollToEnd({ animated: false }), 50);
+      return;
+    }
+
+    // Hai nhịp: gõ xong layout chưa kịp co theo bàn phím, nhịp 300ms bù lại.
+    const nudge = () => {
+      focused.measureInWindow((_x, y, _width, height) => {
+        // Chừa một khoảng thở dưới ô để còn thấy được viền và dòng gợi ý.
+        const margin = Spacing.four;
+        const overlap = y + height + margin - keyboardTop.current;
+        if (overlap <= 0) {
+          // Ô đã nằm trên bàn phím rồi thì ĐỪNG cuộn — cuộn thừa chính là cảm
+          // giác "màn tự nhảy" mà người dùng thấy.
+          return;
+        }
+        scrollRef.current?.scrollTo({
+          y: scrollY.current + overlap,
+          animated: false,
+        });
+      });
+    };
+    setTimeout(nudge, 50);
+    setTimeout(nudge, 300);
   }, []);
 
   useEffect(() => {
@@ -110,14 +143,16 @@ export function OperationsScreen({
         // chuyển) → kẹp về 0, không thì padding thiếu đúng phần âm đó và nút
         // dưới cùng vẫn bị bàn phím cắt.
         const screenHeight = Dimensions.get("screen").height;
-        const keyboardTop = screenHeight - event.endCoordinates.height;
+        const top = screenHeight - event.endCoordinates.height;
+        keyboardTop.current = top;
         const bottom = Math.max(0, y) + height;
-        setKeyboardHeight(Math.max(0, bottom - keyboardTop));
+        setKeyboardHeight(Math.max(0, bottom - top));
         keepInputVisible();
       });
     });
     const hide = Keyboard.addListener("keyboardDidHide", () => {
       keyboardOpen.current = false;
+      keyboardTop.current = Number.POSITIVE_INFINITY;
       setKeyboardHeight(0);
     });
 
@@ -157,6 +192,11 @@ export function OperationsScreen({
         // Ô mô tả là multiline, gõ dài thì nó cao dần xuống dưới và chui vào
         // vùng bàn phím → mỗi lần nội dung cao lên thì cuộn theo.
         onContentSizeChange={keepInputVisible}
+        // Cần vị trí cuộn thật để tính "cuộn thêm bao nhiêu là vừa đủ".
+        onScroll={(event) => {
+          scrollY.current = event.nativeEvent.contentOffset.y;
+        }}
+        scrollEventThrottle={16}
         // Bàn phím: tự chừa chỗ để ô nhập/nút bấm cuối form không bị che, và cho
         // phép chạm thẳng vào nút khi bàn phím đang mở (mặc định phải chạm 2 lần
         // — lần đầu chỉ để đóng bàn phím).

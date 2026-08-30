@@ -7,6 +7,7 @@ import type {
   ReportIncidentInput,
   StartTripData,
   StopArrivalData,
+  StopDepartureData,
 } from "./types";
 
 // Thao tác vận hành của tài xế/phụ xe trên chuyến đang chạy (API Day 39).
@@ -44,6 +45,24 @@ export function arriveAtStop(
 ): Promise<StopArrivalData> {
   return apiRequest<StopArrivalData>(
     `/v1/driver/trips/${tripId}/stops/${stopId}/arrive`,
+    {
+      method: "POST",
+      headers: { "Idempotency-Key": newIdempotencyKey() },
+    },
+  );
+}
+
+// Rời điểm dừng (Guide (2) §B6). Không body. Trip service hỏi Parcel service
+// xem điểm này đã đối soát xong chưa:
+//   - hết kiện chưa đối soát, hoặc có phiếu rời điểm ĐÃ DUYỆT → cho đi;
+//   - còn kiện mà chưa có phiếu duyệt → 409 PARCEL_STOP_RECONCILIATION_REQUIRED
+//     kèm `approvalRequestId` trong error.fields để mở đúng phiếu đang chờ.
+export function departFromStop(
+  tripId: string,
+  stopId: string,
+): Promise<StopDepartureData> {
+  return apiRequest<StopDepartureData>(
+    `/v1/driver/trips/${tripId}/stops/${stopId}/depart`,
     {
       method: "POST",
       headers: { "Idempotency-Key": newIdempotencyKey() },

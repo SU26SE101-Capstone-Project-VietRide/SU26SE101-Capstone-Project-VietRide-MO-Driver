@@ -4,10 +4,16 @@ import type { QueryClient } from "@tanstack/react-query";
 import {
   checkInParcel,
   confirmParcelDelivery,
+  confirmFoundOnVehicle,
   confirmParcelTransfer,
+  decideCustodyException,
+  decideStopDepartureApproval,
   deliverParcel,
   getAssistantTripParcels,
+  getCustodyExceptionRequest,
+  getStopDepartureApproval,
   loadParcel,
+  reconcileDestination,
   reconcileStop,
   recordCustodyScan,
   reportCustodyException,
@@ -15,7 +21,9 @@ import {
   reweighParcel,
   scanParcelQr,
   unloadParcel,
+  type ApprovalDecision,
   type AssistantParcelManifestParams,
+  type ConfirmFoundOnVehicleInput,
   type CustodyExceptionInput,
   type CustodyScanInput,
   type ReconcileStopInput,
@@ -28,6 +36,8 @@ import type {
 } from "@/api/types";
 
 const MANIFEST_KEY = "assistant-parcels";
+const EXCEPTION_KEY = "parcel-custody-exception";
+const DEPARTURE_APPROVAL_KEY = "parcel-stop-departure-approval";
 
 // Manifest screen-ready của chuyến (Assistant). staleTime ngắn vì trạng thái
 // kiện đổi liên tục từ nơi khác (khách trả tiền, operator chuyển kiện…).
@@ -241,6 +251,80 @@ export function useConfirmParcelTransfer(tripId: string | null) {
     mutationFn: (vars: { parcelId: string; parcelCode: string }) =>
       confirmParcelTransfer(vars.parcelId, vars.parcelCode),
     onSuccess: invalidate,
+  });
+}
+
+// Xác nhận kiện đang bị mở phiếu tìm kiếm vẫn còn trên xe (Playbook v2 §8).
+// Backend đóng incident và trả kiện về LOADED/IN_TRANSIT — response là action
+// screen model nên patch thẳng vào card.
+export function useConfirmFoundOnVehicle(tripId: string | null) {
+  const apply = useApplyAction(tripId);
+  return useMutation({
+    mutationFn: (vars: {
+      parcelId: string;
+      input: ConfirmFoundOnVehicleInput;
+    }) => confirmFoundOnVehicle(vars.parcelId, vars.input),
+    onSuccess: apply,
+  });
+}
+
+// Đối soát tại bến cuối trước khi hoàn tất chuyến (Playbook v2 §10).
+export function useReconcileDestination(tripId: string | null) {
+  const invalidate = useInvalidateParcels(tripId);
+  return useMutation({
+    mutationFn: () => reconcileDestination(tripId as string),
+    onSuccess: invalidate,
+  });
+}
+
+// ===== Tài xế duyệt (Guide (2) §E2-E3, §F3-F4) =========================
+// Backend chưa có endpoint queue nên phải biết trước parcelId/requestId; lấy
+// từ thông báo hoặc từ error fields khi rời điểm bị chặn.
+
+export function useCustodyExceptionRequest(parcelId: string | null) {
+  return useQuery({
+    queryKey: [EXCEPTION_KEY, parcelId],
+    queryFn: () => getCustodyExceptionRequest(parcelId as string),
+    enabled: parcelId != null,
+    // Phiếu có thể được operator duyệt song song → không giữ cache lâu.
+    staleTime: 0,
+    retry: false,
+  });
+}
+
+export function useDecideCustodyException(parcelId: string | null) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (vars: { decision: ApprovalDecision; note: string }) =>
+      decideCustodyException(parcelId as string, vars.decision, vars.note),
+    // Ghi thẳng kết quả vào cache: người duyệt cần thấy trạng thái mới ngay,
+    // và §19 dặn khi tranh chấp thì đọc lại state của server chứ không tự đoán.
+    onSuccess: (data) =>
+      queryClient.setQueryData([EXCEPTION_KEY, parcelId], data),
+  });
+}
+
+export function useStopDepartureApproval(requestId: string | null) {
+  return useQuery({
+    queryKey: [DEPARTURE_APPROVAL_KEY, requestId],
+    queryFn: () => getStopDepartureApproval(requestId as string),
+    enabled: requestId != null,
+    staleTime: 0,
+    retry: false,
+  });
+}
+
+export function useDecideStopDeparture(requestId: string | null) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (vars: { decision: ApprovalDecision; note: string }) =>
+      decideStopDepartureApproval(
+        requestId as string,
+        vars.decision,
+        vars.note,
+      ),
+    onSuccess: (data) =>
+      queryClient.setQueryData([DEPARTURE_APPROVAL_KEY, requestId], data),
   });
 }
 
