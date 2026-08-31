@@ -12,45 +12,34 @@ import {
   startTrip,
 } from "@/api/driver-ops";
 import type { ReportIncidentInput } from "@/api/types";
+import { invalidateTripLifecycle } from "@/features/trip-ops/trip-cache";
 
-// Sau khi xác nhận tới nơi phải làm mới hai thứ:
-// - chi tiết chuyến: lấy stops[].status và destinationArrivedAt mới từ backend
-//   (backend là nguồn trạng thái duy nhất);
-// - danh sách kiện: thao tác dỡ kiện vừa được mở khoá.
-function useAfterArrival(tripId: string | null) {
+// FE-PCL-005: mọi bước vòng đời chuyến làm mới CÙNG một danh sách query
+// (xem `tripLifecycleQueryKeys`). Trước đây mỗi mutation tự chọn một hai key
+// nên trạng thái đứng lại ở màn/tab khác cho tới khi crew kéo xuống refresh.
+function useInvalidateTripLifecycle(tripId: string | null) {
   const queryClient = useQueryClient();
 
-  return async () => {
-    await Promise.all([
-      queryClient.invalidateQueries({ queryKey: ["trip", tripId] }),
-      queryClient.invalidateQueries({ queryKey: ["assistant-parcels", tripId] }),
-    ]);
-  };
+  return () => invalidateTripLifecycle(queryClient, tripId);
 }
 
-// Bắt đầu chuyến (BOARDING -> IN_PROGRESS). Làm mới lịch + chi tiết chuyến
-// để status mới lan tới màn Chuyến (mở khoá "Đã đến"/GPS theo IN_PROGRESS).
+// Bắt đầu chuyến (BOARDING -> IN_PROGRESS).
 export function useStartTrip(tripId: string | null) {
-  const queryClient = useQueryClient();
+  const invalidate = useInvalidateTripLifecycle(tripId);
 
   return useMutation({
     mutationFn: () => startTrip(tripId as string),
-    onSuccess: async () => {
-      await Promise.all([
-        queryClient.invalidateQueries({ queryKey: ["schedule"] }),
-        queryClient.invalidateQueries({ queryKey: ["trip", tripId] }),
-      ]);
-    },
+    onSuccess: invalidate,
   });
 }
 
 // Xác nhận xe đã đến một điểm dừng.
 export function useArriveAtStop(tripId: string | null) {
-  const afterArrival = useAfterArrival(tripId);
+  const invalidate = useInvalidateTripLifecycle(tripId);
 
   return useMutation({
     mutationFn: (stopId: string) => arriveAtStop(tripId as string, stopId),
-    onSuccess: afterArrival,
+    onSuccess: invalidate,
   });
 }
 
@@ -58,36 +47,31 @@ export function useArriveAtStop(tripId: string | null) {
 // backend trả 409 PARCEL_STOP_RECONCILIATION_REQUIRED kèm `approvalRequestId`
 // để tài xế mở đúng phiếu đang chờ duyệt.
 export function useDepartFromStop(tripId: string | null) {
-  const afterArrival = useAfterArrival(tripId);
+  const invalidate = useInvalidateTripLifecycle(tripId);
 
   return useMutation({
     mutationFn: (stopId: string) => departFromStop(tripId as string, stopId),
-    onSuccess: afterArrival,
+    onSuccess: invalidate,
   });
 }
 
 // Xác nhận xe đã tới bến cuối. KHÔNG hoàn tất chuyến.
 export function useArriveAtDestination(tripId: string | null) {
-  const afterArrival = useAfterArrival(tripId);
+  const invalidate = useInvalidateTripLifecycle(tripId);
 
   return useMutation({
     mutationFn: () => arriveAtDestination(tripId as string),
-    onSuccess: afterArrival,
+    onSuccess: invalidate,
   });
 }
 
-// Hoàn tất chuyến. Làm mới lịch + chi tiết chuyến vì trạng thái đổi.
+// Hoàn tất chuyến.
 export function useCompleteTrip(tripId: string | null) {
-  const queryClient = useQueryClient();
+  const invalidate = useInvalidateTripLifecycle(tripId);
 
   return useMutation({
     mutationFn: () => completeTrip(tripId as string),
-    onSuccess: async () => {
-      await Promise.all([
-        queryClient.invalidateQueries({ queryKey: ["schedule"] }),
-        queryClient.invalidateQueries({ queryKey: ["trip", tripId] }),
-      ]);
-    },
+    onSuccess: invalidate,
   });
 }
 

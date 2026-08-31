@@ -8,6 +8,7 @@ import {
 } from "react-native-safe-area-context";
 
 import { Colors } from "@/constants/theme";
+import { useApprovalDeepLink } from "@/features/notifications/use-approval-deep-link";
 import { usePushNavigation } from "@/features/notifications/use-push-navigation";
 import {
     SessionProvider,
@@ -75,6 +76,10 @@ function AppSessionGate() {
 
   // Bấm push → điều hướng theo data.type (chỉ chạy khi đã đăng nhập).
   usePushNavigation();
+
+  // Mở link phiếu duyệt (App Link https hoặc vietride://) thẳng trong app
+  // thay vì rơi ra trình duyệt (FE-PCL-003).
+  useApprovalDeepLink();
 
   // Đang khôi phục phiên từ secure store — chưa biết vào đâu.
   if (status === "loading") {

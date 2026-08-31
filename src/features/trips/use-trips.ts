@@ -10,10 +10,21 @@ import {
   type NormalizedTripStatus,
 } from "./trip-format";
 
+// FE-PCL-005: lịch chuyến là nơi bộ chọn chuyến và `useActiveTrip` đọc status,
+// nhưng lifecycle do MÁY KHÁC bấm (tài xế start chuyến) thì invalidate cục bộ
+// của máy phụ xe không giúp gì. Backend cũng không có socket event cho chuyển
+// trạng thái vòng đời — `trip:statusChanged` chỉ phát khi chuyến bị đánh dấu
+// trễ. Nên poll là cách duy nhất để hai vai thấy cùng một trạng thái.
+//
+// 25s = đúng nhịp của manifest và trip detail, để ba nguồn không đọc dữ liệu ở
+// ba thời điểm khác nhau rồi hiện ra mâu thuẫn trên cùng một màn.
+const SCHEDULE_REFETCH_MS = 25_000;
+
 export function useDriverSchedule(from: string, to: string) {
   return useQuery({
     queryKey: ["schedule", from, to],
     queryFn: () => getMySchedule(from, to),
+    refetchInterval: SCHEDULE_REFETCH_MS,
   });
 }
 

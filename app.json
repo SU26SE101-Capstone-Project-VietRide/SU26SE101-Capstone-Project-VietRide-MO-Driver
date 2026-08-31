@@ -33,6 +33,21 @@
               "scheme": "https",
               "host": "vietride.online",
               "pathPrefix": "/auth/set-password"
+            },
+            {
+              "scheme": "https",
+              "host": "vietride.online",
+              "pathPrefix": "/driver/parcel-approval"
+            },
+            {
+              "scheme": "https",
+              "host": "vietride.online",
+              "pathPrefix": "/parcel-stop-departure-approvals"
+            },
+            {
+              "scheme": "https",
+              "host": "vietride.online",
+              "pathPrefix": "/crew/parcel-stop-departure-approvals"
             }
           ],
           "category": [

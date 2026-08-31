@@ -105,6 +105,7 @@ import {
   custodyApprovalStatusLabel,
   custodyEventLabel,
   custodyLocationMismatch,
+  destinationReconcileMeta,
   formatPhone,
   formatVnd,
   incidentStatusLabel,
@@ -150,6 +151,8 @@ import {
   useAuthenticatedSession,
   useSession,
 } from "@/features/session/session-context";
+import { useDepartedStops } from "@/features/trip-ops/departed-stops";
+import { tripCompletionBlocker } from "@/features/trip-ops/trip-completion";
 import {
   firstErrorMessage,
   tripOpsErrorMessage,
@@ -422,6 +425,11 @@ export function DriverTripScreen() {
     normalizeTripStatus(activeTrip.trip?.status) === "IN_PROGRESS";
   const completeTripMutation = useCompleteTrip(tripId);
   const completeError = tripOpsErrorMessage(completeTripMutation.error);
+  // FE-PCL-008: bước còn thiếu trước khi được phép đóng chuyến (null = đủ).
+  const completionBlocker = tripCompletionBlocker({
+    status: activeTrip.trip?.status,
+    destinationArrivedAt: details?.destinationArrivedAt,
+  });
   const routeQuery = useTripRouteGeometry(tripId);
   // Chỉ dùng khi bật cờ demo EXPO_PUBLIC_FAKE_GPS; bình thường là mảng rỗng.
   const simulationPath = useMemo(
@@ -607,36 +615,28 @@ export function DriverTripScreen() {
             ) : null}
 
             {tripInProgress ? (
-              <ActionButton
-                icon="check-circle"
-                label={
-                  completeTripMutation.isPending
-                    ? "Đang hoàn tất chuyến…"
-                    : "Hoàn tất chuyến"
-                }
-                tone="secondary"
-                disabled={completeTripMutation.isPending}
-                onPress={() => {
-                  // Chưa ghi nhận tới bến cuối thì hỏi lại cho chắc — backend
-                  // không bắt buộc mốc này để complete, nhưng thường là bấm nhầm.
-                  if (details.destinationArrivedAt == null) {
-                    Alert.alert(
-                      "Hoàn tất chuyến?",
-                      "Chuyến chưa ghi nhận đã đến bến cuối. Vẫn hoàn tất?",
-                      [
-                        { text: "Chưa", style: "cancel" },
-                        {
-                          text: "Hoàn tất",
-                          style: "destructive",
-                          onPress: () => completeTripMutation.mutate(),
-                        },
-                      ],
-                    );
-                    return;
+              <>
+                <ActionButton
+                  icon="check-circle"
+                  label={
+                    completeTripMutation.isPending
+                      ? "Đang hoàn tất chuyến…"
+                      : "Hoàn tất chuyến"
                   }
-                  completeTripMutation.mutate();
-                }}
-              />
+                  tone="secondary"
+                  // FE-PCL-008: thiếu bước nào thì khoá nút và nói rõ bước đó,
+                  // KHÔNG hỏi "vẫn hoàn tất?" rồi cho bấm qua.
+                  disabled={
+                    completeTripMutation.isPending || completionBlocker != null
+                  }
+                  onPress={() => completeTripMutation.mutate()}
+                />
+                {completionBlocker ? (
+                  <Text style={styles.metaText}>
+                    {completionBlocker.reason}
+                  </Text>
+                ) : null}
+              </>
             ) : null}
             {completeError ? (
               <Text style={styles.delayText}>{completeError}</Text>
@@ -2217,6 +2217,17 @@ function DestinationReconcileSection({ tripId }: { tripId: string }) {
   const [result, setResult] = useState<DestinationReconcileData | null>(null);
   const unresolved = result?.unresolvedParcels ?? [];
   const errorMessage = tripOpsErrorMessage(reconcile.error);
+  // FE-PCL-004: nhãn lấy từ số đếm / cờ `allDelivered`, KHÔNG lấy từ
+  // `canComplete` — cờ đó chỉ nói "được phép đóng chuyến".
+  const meta = result
+    ? destinationReconcileMeta({
+        expectedCount: result.expectedCount,
+        scannedCount: result.scannedCount,
+        canComplete: result.canComplete,
+        unresolvedCount: unresolved.length,
+        allDelivered: result.allDelivered,
+      })
+    : null;
 
   return (
     <SurfaceCard delay={110}>
@@ -2230,21 +2241,17 @@ function DestinationReconcileSection({ tripId }: { tripId: string }) {
           <Text style={styles.errorText}>{errorMessage}</Text>
         ) : null}
 
-        {result ? (
+        {result && meta ? (
           <>
             <View style={styles.metaRow}>
-              <StatusChip
-                label={
-                  result.canComplete
-                    ? "Xong, giao đủ kiện"
-                    : "Còn kiện chưa giao"
-                }
-                tone={result.canComplete ? "success" : "danger"}
-              />
+              <StatusChip label={meta.label} tone={meta.tone} />
               <Text style={[styles.metaText, styles.metaTextGrow]}>
                 Đã giao {result.scannedCount}/{result.expectedCount} kiện
               </Text>
             </View>
+            {meta.hint ? (
+              <Text style={styles.parcelHint}>{meta.hint}</Text>
+            ) : null}
             {unresolved.map((parcel) => (
               <View
                 key={parcel.parcelId}
@@ -3606,15 +3613,10 @@ export function AssistantStopsScreen() {
   // `approvalRequestId` để mở đúng phiếu phụ xe đã tạo (Guide (2) §F5).
   const blockedApprovalId = stopDepartureBlocked(departStop.error);
 
-  // Điểm đã chốt rời trong phiên này. Cần state riêng vì backend có thể chưa
-  // trả `actualDepartureTime` trong trip detail — không có nó thì nút "Rời
-  // điểm" cứ đứng nguyên sau khi bấm, trông như không có gì xảy ra và tài xế
-  // bấm lại sẽ ăn 409 TRIP_STOP_ALREADY_DEPARTED.
-  const [departedStopIds, setDepartedStopIds] = useState<string[]>([]);
-  const markDeparted = (stopId: string) =>
-    setDepartedStopIds((current) =>
-      current.includes(stopId) ? current : [...current, stopId],
-    );
+  // Điểm đã chốt rời trong phiên này. Cache KHOÁ THEO tripId (FE-PCL-001):
+  // hai chuyến dùng chung route thì dùng chung luôn stopId, khoá theo mỗi
+  // stopId sẽ làm chuyến sau tưởng đã rời điểm và mất nút "Rời điểm này".
+  const { isDeparted, markDeparted } = useDepartedStops(tripId);
 
   const handleDepart = (stopId: string) => {
     departStop.mutate(stopId, {
@@ -3794,7 +3796,7 @@ export function AssistantStopsScreen() {
             attentionStopId={showArrivalPrompt ? arrivalPromptStopId : null}
             onArrive={(stopId) => arriveStop.mutate(stopId)}
             onDepart={handleDepart}
-            departedStopIds={departedStopIds}
+            isStopDeparted={isDeparted}
             actionDisabled={!tripRunning || busy}
             pendingStopId={
               arriveStop.isPending
@@ -4844,7 +4846,7 @@ function TripStopsCard({
   attentionStopId = null,
   onArrive,
   onDepart,
-  departedStopIds = [],
+  isStopDeparted,
   actionDisabled = false,
   pendingStopId = null,
 }: {
@@ -4857,7 +4859,9 @@ function TripStopsCard({
   // Rời điểm — chỉ hiện sau khi đã tới điểm đó (Guide (2) §B6).
   onDepart?: (stopId: string) => void;
   // Điểm vừa chốt rời trong phiên này (backend detail có thể chưa trả mốc rời).
-  departedStopIds?: string[];
+  // Nhận predicate chứ không nhận mảng stopId: cache phía trên khoá theo
+  // tripId, card không được tự suy trạng thái từ danh sách trần (FE-PCL-001).
+  isStopDeparted?: (stopId: string) => boolean;
   actionDisabled?: boolean;
   pendingStopId?: string | null;
 }) {
@@ -4907,7 +4911,7 @@ function TripStopsCard({
           const arrived = stop.status === "ARRIVED";
           const stopDeparted =
             stop.actualDepartureTime != null ||
-            departedStopIds.includes(stop.stopId);
+            (isStopDeparted?.(stop.stopId) ?? false);
           const skipped = stop.status === "SKIPPED";
           // Điểm đã chốt (đến hoặc bỏ qua) thì không còn thao tác.
           const finalized = arrived || skipped;

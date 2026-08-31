@@ -139,3 +139,67 @@ export function formatRelativeTime(iso: string, now: number): string {
   const date = new Date(iso);
   return `${date.getDate()}/${date.getMonth() + 1}/${date.getFullYear()}`;
 }
+
+// BE gửi title/body đã "gần" tiếng Việt nhưng còn lẫn thuật ngữ tiếng Anh
+// ("Có booking mới trên chuyến", "Có đơn hàng cần check-in"). App 100% tiếng
+// Việt nên FE dịch nốt ở tầng hiển thị thay vì chờ BE sửa chuỗi.
+// Bước 1: khớp NGUYÊN câu để dịch cho tự nhiên; bước 2: thay theo từ cho các
+// chuỗi chưa có trong bảng (BE có thể thêm loại thông báo mới bất cứ lúc nào).
+const NOTIFICATION_PHRASE_OVERRIDES: Record<string, string> = {
+  "có booking mới trên chuyến": "Có vé mới trên chuyến",
+  "có booking mới": "Có vé mới",
+  "có đơn hàng cần check-in": "Có kiện hàng cần nhận tại bến",
+  "có đơn hàng cần checkin": "Có kiện hàng cần nhận tại bến",
+  "có kiện hàng cần check-in": "Có kiện hàng cần nhận tại bến",
+};
+
+// Từ khóa cho biết câu đang nói về hàng hóa — "check-in" khi đó là "nhận kiện
+// tại bến" (theo nhãn CTA của phụ xe), còn với vé thì là "soát vé".
+const PARCEL_CONTEXT_PATTERN = /kiện|hàng|parcel|cargo|đơn/i;
+
+// Thay theo từ, có \b nên không phá mã vé/kiện (VR-2026…, PRC123456).
+const NOTIFICATION_WORD_RULES: { pattern: RegExp; to: string }[] = [
+  { pattern: /\bbookings?\b/gi, to: "vé" },
+  { pattern: /\bparcels?\b/gi, to: "kiện hàng" },
+  { pattern: /\bcheck[-\s]?outs?\b/gi, to: "trả kiện" },
+  { pattern: /\bno[-\s]?show\b/gi, to: "khách vắng mặt" },
+  { pattern: /\bshuttle\b/gi, to: "trung chuyển" },
+  { pattern: /\bdriver\b/gi, to: "tài xế" },
+  { pattern: /\bassistant\b/gi, to: "phụ xe" },
+];
+
+// Giữ nguyên kiểu chữ đầu của từ gốc để câu không bị lệch hoa/thường.
+function matchCase(source: string, replacement: string): string {
+  const firstChar = source.charAt(0);
+  if (firstChar !== firstChar.toLowerCase()) {
+    return replacement.charAt(0).toUpperCase() + replacement.slice(1);
+  }
+  return replacement;
+}
+
+export function localizeNotificationText(text: string | null | undefined): string {
+  if (!text) {
+    return "";
+  }
+
+  const override = NOTIFICATION_PHRASE_OVERRIDES[text.trim().toLowerCase()];
+  if (override) {
+    return override;
+  }
+
+  const checkInTo = PARCEL_CONTEXT_PATTERN.test(text)
+    ? "nhận tại bến"
+    : "soát vé";
+
+  let result = text.replace(/\bcheck[-\s]?ins?\b/gi, (matched) =>
+    matchCase(matched, checkInTo),
+  );
+
+  for (const rule of NOTIFICATION_WORD_RULES) {
+    result = result.replace(rule.pattern, (matched) =>
+      matchCase(matched, rule.to),
+    );
+  }
+
+  return result;
+}

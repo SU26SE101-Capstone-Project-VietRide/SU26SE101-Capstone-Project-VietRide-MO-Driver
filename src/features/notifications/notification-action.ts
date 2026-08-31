@@ -13,6 +13,7 @@ const ACTION_TYPES = [
   "OPEN_TRIP_DETAIL",
   "OPEN_TRIP_TRACKING",
   "OPEN_PARCEL_DETAIL",
+  "OPEN_PARCEL_APPROVAL",
   "OPEN_WALLET",
   "OPEN_SUBSCRIPTION",
   "OPEN_SHUTTLE_TRACKING",
@@ -113,6 +114,22 @@ function legacyActionFromPushData(
     }
   }
 
+  // FE-PCL-003: phiếu chờ duyệt nhận ra được ngay cả khi BE chưa gửi
+  // `actionType`, miễn là payload có id của phiếu. Nhận diện theo ID chứ không
+  // theo `data.type` vì tên notification type của phiếu duyệt chưa chốt trong
+  // contract — có id nghĩa là có phiếu thật để mở.
+  const approvalRequestId = stringParam(data, "approvalRequestId");
+  const custodyParcelId = stringParam(data, "custodyExceptionParcelId");
+  if (approvalRequestId || custodyParcelId) {
+    return {
+      type: "OPEN_PARCEL_APPROVAL",
+      params: {
+        ...(custodyParcelId ? { parcelId: custodyParcelId } : {}),
+        ...(approvalRequestId ? { requestId: approvalRequestId } : {}),
+      },
+    };
+  }
+
   if (type === "PARCEL_UPDATE" && parcelId) {
     return { type: "OPEN_PARCEL_DETAIL", params: { parcelId } };
   }
@@ -122,6 +139,22 @@ function legacyActionFromPushData(
   }
 
   return NO_ACTION;
+}
+
+// Route màn duyệt phiếu của tài xế. `parcelId` (phiếu sự cố custody) được ưu
+// tiên khi có cả hai, vì màn đó cũng ưu tiên nó.
+export function parcelApprovalHref(
+  parcelId: string | null,
+  requestId: string | null,
+): Href | null {
+  if (parcelId) {
+    return `/driver/parcel-approval?parcelId=${encodeURIComponent(parcelId)}` as Href;
+  }
+  if (requestId) {
+    return `/driver/parcel-approval?requestId=${encodeURIComponent(requestId)}` as Href;
+  }
+  // Mở màn trống chỉ để hiện "thiếu mã phiếu" thì vô nghĩa — thà đứng yên.
+  return null;
 }
 
 // Map action nghiệp vụ → route thật của app crew này. App chỉ có DRIVER và
@@ -166,6 +199,18 @@ export function resolveActionHref(
         : null;
     }
 
+    // FE-PCL-003: phiếu chờ duyệt là việc của tài xế được phân công. Phụ xe
+    // không được duyệt phiếu do chính mình tạo nên không có màn đích.
+    case "OPEN_PARCEL_APPROVAL": {
+      if (role !== "DRIVER") {
+        return null;
+      }
+      return parcelApprovalHref(
+        stringParam(action.params, "parcelId"),
+        stringParam(action.params, "requestId"),
+      );
+    }
+
     case "OPEN_SHUTTLE_TRACKING": {
       const shuttleTripId = stringParam(action.params, "shuttleTripId");
       if (role !== "DRIVER" || !shuttleTripId) {
@@ -180,6 +225,73 @@ export function resolveActionHref(
     case "NONE":
       return null;
   }
+}
+
+// ===== URL web → route trong app (FE-PCL-003) =========================
+//
+// Bản E2E production 2026-08-31: link duyệt phiếu mở Chrome thay vì mở
+// VietRide. Nguyên nhân gồm hai phần, phần này lo phần FE:
+//   1. `app.json` chỉ đăng ký App Link cho `/auth/set-password` (đã bổ sung
+//      thêm tiền tố đường dẫn của phiếu duyệt);
+//   2. khi URL đó vào được app rồi thì vẫn phải map sang route thật.
+//
+// Hàm dưới đây nhận DIỆN theo hình dạng đường dẫn của API phiếu duyệt, nên nó
+// hoạt động cả với link `vietride://` lẫn link https. Không khớp thì trả null
+// và app để hệ điều hành xử lý như cũ — không đoán bừa.
+const APPROVAL_URL_PATTERNS: { regex: RegExp; kind: "request" | "parcel" }[] = [
+  // .../parcel-stop-departure-approvals/{requestId}[/decision]
+  {
+    regex: /parcel-stop-departure-approvals\/([0-9a-fA-F-]{36})/,
+    kind: "request",
+  },
+  // .../parcels/{parcelId}/custody-exception[...]
+  {
+    regex: /parcels\/([0-9a-fA-F-]{36})\/custody-exception/,
+    kind: "parcel",
+  },
+  // Route riêng của app, dạng path (query xử lý riêng bên dưới).
+  { regex: /driver\/parcel-approval/, kind: "request" },
+];
+
+function queryParam(url: string, key: string): string | null {
+  const match = new RegExp(`[?&]${key}=([^&#]+)`).exec(url);
+  if (!match?.[1]) {
+    return null;
+  }
+  try {
+    return decodeURIComponent(match[1]);
+  } catch {
+    return match[1];
+  }
+}
+
+// null = URL này không phải link phiếu duyệt.
+export function approvalHrefFromUrl(url: string | null | undefined): Href | null {
+  if (!url) {
+    return null;
+  }
+
+  // Query string luôn thắng: nó là dạng tường minh nhất và cũng là dạng route
+  // của chính app.
+  const fromQuery = parcelApprovalHref(
+    queryParam(url, "parcelId"),
+    queryParam(url, "requestId"),
+  );
+  if (fromQuery) {
+    return fromQuery;
+  }
+
+  for (const { regex, kind } of APPROVAL_URL_PATTERNS) {
+    const id = regex.exec(url)?.[1];
+    if (!id) {
+      continue;
+    }
+    return kind === "parcel"
+      ? parcelApprovalHref(id, null)
+      : parcelApprovalHref(null, id);
+  }
+
+  return null;
 }
 
 // Các query cần refetch sau khi nhận notification. REST vẫn là source of truth,
@@ -205,6 +317,20 @@ export function invalidationKeysForAction(
 
   if (action.type === "OPEN_PARCEL_DETAIL") {
     keys.push(["parcels"]);
+  }
+
+  // Phiếu bị quyết định/hết hạn ở nơi khác thì hàng đợi và chi tiết phiếu phải
+  // tự cập nhật, không bắt tài xế kéo xuống refresh (FE-PCL-002).
+  if (action.type === "OPEN_PARCEL_APPROVAL") {
+    const parcelId = stringParam(action.params, "parcelId");
+    const requestId = stringParam(action.params, "requestId");
+    keys.push(["parcels"]);
+    if (parcelId) {
+      keys.push(["parcel-custody-exception", parcelId]);
+    }
+    if (requestId) {
+      keys.push(["parcel-stop-departure-approval", requestId]);
+    }
   }
 
   return keys;

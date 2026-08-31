@@ -22,6 +22,7 @@ import {
 } from "@/features/notifications/notification-action";
 import {
     formatRelativeTime,
+    localizeNotificationText,
     notificationBadgeOf,
     notificationToneOf,
 } from "@/features/notifications/notification-format";
@@ -93,8 +94,10 @@ export default function NotificationsScreen() {
     () =>
       (listQuery.data?.items ?? []).map((item) => ({
         id: item.id,
-        title: item.title,
-        body: item.body,
+        // BE còn gửi chuỗi lẫn tiếng Anh ("booking", "check-in") → dịch nốt ở
+        // tầng hiển thị, app 100% tiếng Việt.
+        title: localizeNotificationText(item.title),
+        body: localizeNotificationText(item.body),
         badge: notificationBadgeOf(item.type),
         tone: notificationToneOf(item.type),
         time: formatRelativeTime(item.createdAt, now),

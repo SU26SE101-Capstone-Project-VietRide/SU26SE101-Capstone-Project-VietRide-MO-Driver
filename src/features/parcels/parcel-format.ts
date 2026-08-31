@@ -22,63 +22,85 @@ function unknownEnum(kind: string, value: string | null | undefined): void {
   }
 }
 
-// Backend trả status parcel dạng string (22 giá trị, Settlement v2) → map
-// defensive, có fallback.
+// Backend trả status parcel dạng string (22 giá trị, Settlement v2). Dùng
+// `Record` để thiếu label là lỗi biên dịch chứ không phải chữ "Không rõ trạng
+// thái" lặng lẽ tới tay phụ xe.
+export const PARCEL_STATUSES = [
+  "PENDING_OPERATOR_REVIEW",
+  "PENDING_PAYMENT",
+  "PENDING",
+  "PENDING_ADDITIONAL_PAYMENT",
+  "RESERVED",
+  "CHECKED_IN",
+  "PENDING_FINAL_PAYMENT",
+  "READY_TO_LOAD",
+  "LOADED",
+  "IN_TRANSIT",
+  "PENDING_TRANSFER_CONFIRM",
+  "TRANSFER_ESCALATED",
+  "UNLOADED",
+  "DELIVERED_PENDING_CONFIRM",
+  "DELIVERY_CONFIRMED",
+  "DELIVERY_REJECTED",
+  "RETURN_INITIATED",
+  "RETURNED",
+  "PENDING_OPERATOR_ACTION",
+  "CANCELLED",
+  "REJECTED",
+  "EXPIRED",
+] as const;
+
+export type ParcelStatusValue = (typeof PARCEL_STATUSES)[number];
+
+const PARCEL_STATUS_META: Record<
+  ParcelStatusValue,
+  { label: string; tone: Tone }
+> = {
+  PENDING_OPERATOR_REVIEW: { label: "Chờ duyệt", tone: "info" },
+  PENDING_PAYMENT: { label: "Chờ thanh toán cọc", tone: "warning" },
+  PENDING: { label: "Chờ xử lý", tone: "neutral" },
+  PENDING_ADDITIONAL_PAYMENT: { label: "Chờ phụ phí", tone: "warning" },
+  RESERVED: { label: "Đã cọc, chờ tới bến", tone: "info" },
+  CHECKED_IN: { label: "Đã nhận tại bến", tone: "info" },
+  PENDING_FINAL_PAYMENT: { label: "Chờ khách trả nốt", tone: "warning" },
+  READY_TO_LOAD: { label: "Sẵn sàng lên xe", tone: "success" },
+  LOADED: { label: "Đã lên xe", tone: "success" },
+  IN_TRANSIT: { label: "Đang vận chuyển", tone: "primary" },
+  // Đổi xe do sự cố: kiện chờ crew xe MỚI xác nhận đã bốc lên thực tế.
+  PENDING_TRANSFER_CONFIRM: {
+    label: "Chờ xác nhận chuyển sang xe mới",
+    tone: "info",
+  },
+  // Quá hạn 30 phút xác nhận → crew không tự retry được nữa.
+  TRANSFER_ESCALATED: {
+    label: "Quá hạn — chờ điều hành xử lý",
+    tone: "danger",
+  },
+  UNLOADED: { label: "Đã dỡ", tone: "info" },
+  DELIVERED_PENDING_CONFIRM: {
+    label: "Chờ người nhận xác nhận",
+    tone: "warning",
+  },
+  DELIVERY_CONFIRMED: { label: "Đã giao", tone: "success" },
+  DELIVERY_REJECTED: { label: "Người nhận từ chối", tone: "danger" },
+  RETURN_INITIATED: { label: "Đang hoàn trả", tone: "warning" },
+  RETURNED: { label: "Đã hoàn trả", tone: "neutral" },
+  PENDING_OPERATOR_ACTION: { label: "Chờ điều hành xử lý", tone: "warning" },
+  CANCELLED: { label: "Đã hủy", tone: "danger" },
+  REJECTED: { label: "Bị từ chối", tone: "danger" },
+  EXPIRED: { label: "Hết hạn", tone: "neutral" },
+};
+
 export function parcelStatusMeta(status: string | null | undefined): {
   label: string;
   tone: Tone;
 } {
-  switch (status) {
-    case "PENDING_OPERATOR_REVIEW":
-      return { label: "Chờ duyệt", tone: "info" };
-    case "PENDING_PAYMENT":
-      return { label: "Chờ thanh toán cọc", tone: "warning" };
-    case "PENDING":
-      return { label: "Chờ xử lý", tone: "neutral" };
-    case "PENDING_ADDITIONAL_PAYMENT":
-      return { label: "Chờ phụ phí", tone: "warning" };
-    case "RESERVED":
-      return { label: "Đã cọc, chờ tới bến", tone: "info" };
-    case "CHECKED_IN":
-      return { label: "Đã nhận tại bến", tone: "info" };
-    case "PENDING_FINAL_PAYMENT":
-      return { label: "Chờ khách trả nốt", tone: "warning" };
-    case "READY_TO_LOAD":
-      return { label: "Sẵn sàng lên xe", tone: "success" };
-    case "LOADED":
-      return { label: "Đã lên xe", tone: "success" };
-    case "IN_TRANSIT":
-      return { label: "Đang vận chuyển", tone: "primary" };
-    // Đổi xe do sự cố: kiện chờ crew xe MỚI xác nhận đã bốc lên thực tế.
-    case "PENDING_TRANSFER_CONFIRM":
-      return { label: "Chờ xác nhận chuyển sang xe mới", tone: "info" };
-    // Quá hạn 30 phút xác nhận → crew không tự retry được nữa.
-    case "TRANSFER_ESCALATED":
-      return { label: "Quá hạn — chờ điều hành xử lý", tone: "danger" };
-    case "UNLOADED":
-      return { label: "Đã dỡ", tone: "info" };
-    case "DELIVERED_PENDING_CONFIRM":
-      return { label: "Chờ người nhận xác nhận", tone: "warning" };
-    case "DELIVERY_CONFIRMED":
-      return { label: "Đã giao", tone: "success" };
-    case "DELIVERY_REJECTED":
-      return { label: "Người nhận từ chối", tone: "danger" };
-    case "RETURN_INITIATED":
-      return { label: "Đang hoàn trả", tone: "warning" };
-    case "RETURNED":
-      return { label: "Đã hoàn trả", tone: "neutral" };
-    case "PENDING_OPERATOR_ACTION":
-      return { label: "Chờ điều hành xử lý", tone: "warning" };
-    case "CANCELLED":
-      return { label: "Đã hủy", tone: "danger" };
-    case "REJECTED":
-      return { label: "Bị từ chối", tone: "danger" };
-    case "EXPIRED":
-      return { label: "Hết hạn", tone: "neutral" };
-    default:
-      unknownEnum("parcel status", status);
-      return { label: "Không rõ trạng thái", tone: "neutral" };
+  const meta = PARCEL_STATUS_META[status as ParcelStatusValue];
+  if (meta) {
+    return meta;
   }
+  unknownEnum("parcel status", status);
+  return { label: "Không rõ trạng thái", tone: "neutral" };
 }
 
 // Tiền VND từ backend là số nguyên đồng → "2.700 đ". Null/NaN trả "—".
@@ -471,75 +493,119 @@ export function trackingConfidenceMeta(confidence: string | null | undefined): {
   }
 }
 
-// Đủ 9 giá trị ParcelIncidentType của domain hiện tại
-// (FE-Driver-Assistant-Parcel-Integration-Guide (2) §E1). Trước đây chỉ map 4
-// và còn map nhầm tên `MISSING_PARCEL` (không có trong enum) nên kiện thất lạc
-// thật hiện ra chữ chung chung "Sự cố kiện".
+// Ba bảng enum dưới đây cố tình viết dưới dạng `Record<Enum, string>` chứ
+// không phải `switch`: thêm một giá trị vào union mà quên label thì `tsc` báo
+// lỗi ngay, còn `switch` chỉ lặng lẽ rơi xuống `default` rồi hiện chữ chung
+// chung cho phụ xe (FE-PCL-006). Test đi kèm duyệt hết key của bảng nên nhánh
+// fallback không bao giờ được dùng cho enum đã biết.
+
+// ParcelIncidentType hiện tại (FE-Driver-Assistant-Parcel-Integration-Guide (2)
+// §E1 và Flow H §14).
+export const INCIDENT_TYPES = [
+  "MISSING",
+  "MISSING_AFTER_DEPARTURE",
+  "WRONG_STOP",
+  "DELIVERY_NOT_RECEIVED",
+  "PARTIAL_LOSS",
+  "DAMAGED",
+  "SCAN_IDENTITY_MISMATCH",
+  "PACKAGE_IDENTITY_MISMATCH",
+  "UNSCANNED_HANDOFF",
+  "FORWARDING",
+] as const;
+
+export type ParcelIncidentType = (typeof INCIDENT_TYPES)[number];
+
+const INCIDENT_TYPE_LABELS: Record<ParcelIncidentType, string> = {
+  MISSING: "Không tìm thấy kiện",
+  MISSING_AFTER_DEPARTURE: "Mất kiện sau khi rời bến",
+  WRONG_STOP: "Dỡ nhầm điểm",
+  DELIVERY_NOT_RECEIVED: "Người nhận báo chưa nhận được",
+  PARTIAL_LOSS: "Thiếu một phần hàng",
+  DAMAGED: "Kiện bị hư hỏng",
+  SCAN_IDENTITY_MISMATCH: "Mã quét không khớp kiện",
+  PACKAGE_IDENTITY_MISMATCH: "Kiện không khớp mô tả",
+  UNSCANNED_HANDOFF: "Bàn giao không quét QR",
+  // Flow H: điều hành đã tìm thấy kiện và chọn chuyến khác chở tiếp. Kiện
+  // KHÔNG còn thất lạc, nên tuyệt đối không dùng chữ mang nghĩa sự cố nặng.
+  FORWARDING: "Đang chuyển sang chuyến khác",
+};
+
 export function incidentTypeLabel(type: string | null | undefined): string {
-  switch (type) {
-    case "MISSING":
-      return "Không tìm thấy kiện";
-    case "MISSING_AFTER_DEPARTURE":
-      return "Mất kiện sau khi rời bến";
-    case "WRONG_STOP":
-      return "Dỡ nhầm điểm";
-    case "DELIVERY_NOT_RECEIVED":
-      return "Người nhận báo chưa nhận được";
-    case "PARTIAL_LOSS":
-      return "Thiếu một phần hàng";
-    case "DAMAGED":
-      return "Kiện bị hư hỏng";
-    case "SCAN_IDENTITY_MISMATCH":
-      return "Mã quét không khớp kiện";
-    case "PACKAGE_IDENTITY_MISMATCH":
-      return "Kiện không khớp mô tả";
-    case "UNSCANNED_HANDOFF":
-      return "Bàn giao không quét QR";
-    default:
-      unknownEnum("incident type", type);
-      return "Sự cố kiện";
+  const label = INCIDENT_TYPE_LABELS[type as ParcelIncidentType];
+  if (label) {
+    return label;
   }
+  unknownEnum("incident type", type);
+  return "Sự cố kiện";
 }
 
+export const INCIDENT_STATUSES = [
+  "OPEN",
+  "SEARCHING",
+  "FORWARDING",
+  "RESOLVED",
+  "ESCALATED",
+  "LOST_CONFIRMED",
+] as const;
+
+export type ParcelIncidentStatus = (typeof INCIDENT_STATUSES)[number];
+
+const INCIDENT_STATUS_LABELS: Record<ParcelIncidentStatus, string> = {
+  // Contract 2026-08-28: incident vừa được Assistant báo cáo nằm ở OPEN cho
+  // tới khi Driver/điều hành duyệt. Chưa duyệt thì CHƯA có ai đi tìm kiện,
+  // nên không được hiển thị "đang tìm kiếm" ở trạng thái này (§6.6).
+  OPEN: "Chờ phê duyệt",
+  SEARCHING: "Đang tìm kiếm",
+  // Flow H (§14): kiện đã tìm thấy, điều hành chuyển sang chuyến khác chở
+  // tiếp, chờ crew chuyến đích quét xác nhận.
+  FORWARDING: "Đã tìm thấy, đang chuyển sang chuyến khác",
+  RESOLVED: "Đã xử lý",
+  ESCALATED: "Đã báo cấp trên",
+  LOST_CONFIRMED: "Xác nhận thất lạc",
+};
+
 export function incidentStatusLabel(status: string | null | undefined): string {
-  switch (status) {
-    // Contract 2026-08-28: incident vừa được Assistant báo cáo nằm ở OPEN cho
-    // tới khi Driver/điều hành duyệt. Chưa duyệt thì CHƯA có ai đi tìm kiện,
-    // nên không được hiển thị "đang tìm kiếm" ở trạng thái này (§6.6).
-    case "OPEN":
-      return "Chờ phê duyệt";
-    case "SEARCHING":
-      return "Đang tìm kiếm";
-    case "RESOLVED":
-      return "Đã xử lý";
-    case "ESCALATED":
-      return "Đã báo cấp trên";
-    case "LOST_CONFIRMED":
-      return "Xác nhận thất lạc";
-    default:
-      unknownEnum("incident status", status);
-      return "Chưa rõ trạng thái";
+  const label = INCIDENT_STATUS_LABELS[status as ParcelIncidentStatus];
+  if (label) {
+    return label;
   }
+  unknownEnum("incident status", status);
+  return "Chưa rõ trạng thái";
 }
 
 // Trạng thái phê duyệt của một báo cáo sự cố custody (§6.9). Assistant chỉ
 // tạo được PENDING_APPROVAL; ba trạng thái còn lại do Driver/điều hành quyết.
+export const CUSTODY_APPROVAL_STATUSES = [
+  "PENDING_APPROVAL",
+  "APPROVED",
+  "REJECTED",
+  "CANCELLED",
+] as const;
+
+export type CustodyApprovalStatusValue =
+  (typeof CUSTODY_APPROVAL_STATUSES)[number];
+
+const CUSTODY_APPROVAL_STATUS_LABELS: Record<
+  CustodyApprovalStatusValue,
+  string
+> = {
+  PENDING_APPROVAL: "Chờ phê duyệt",
+  APPROVED: "Đã duyệt, đang tìm kiếm",
+  REJECTED: "Đã bị từ chối",
+  CANCELLED: "Đã hủy báo cáo",
+};
+
 export function custodyApprovalStatusLabel(
   status: string | null | undefined,
 ): string {
-  switch (status) {
-    case "PENDING_APPROVAL":
-      return "Chờ phê duyệt";
-    case "APPROVED":
-      return "Đã duyệt, đang tìm kiếm";
-    case "REJECTED":
-      return "Đã bị từ chối";
-    case "CANCELLED":
-      return "Đã hủy báo cáo";
-    default:
-      unknownEnum("custody approval status", status);
-      return "Chưa rõ trạng thái duyệt";
+  const label =
+    CUSTODY_APPROVAL_STATUS_LABELS[status as CustodyApprovalStatusValue];
+  if (label) {
+    return label;
   }
+  unknownEnum("custody approval status", status);
+  return "Chưa rõ trạng thái duyệt";
 }
 
 // Hành động backend khuyến nghị trong reconcile/lỗi mismatch.
@@ -596,5 +662,70 @@ export function custodyLocationMismatch(
     expectedStop: fields.expectedStop ?? null,
     actualStop: fields.actualStop ?? null,
     requiredAction: fields.requiredAction ?? null,
+  };
+}
+
+// ===== Đối soát tại bến cuối (FE-PCL-004) =============================
+//
+// `canComplete` KHÔNG có nghĩa "đã giao đủ kiện". Backend bật cờ này cả khi
+// chuyến chỉ còn sự cố đã được ghi nhận (clearance ACKNOWLEDGED_INCIDENTS) —
+// tức là vẫn còn kiện nằm trên xe nhưng tài xế được phép đóng chuyến. Bản E2E
+// production 2026-08-31 bắt được card hiện "Xong, giao đủ kiện" ngay cạnh dòng
+// "Đã giao 0/5": đó là báo thành công giả về an toàn hàng hóa.
+//
+// Nguồn sự thật cho "giao đủ" phải là số đếm (hoặc cờ `allDelivered` khi
+// BE-PCL-004 trả), không phải `canComplete`.
+export type DestinationReconcileCounts = {
+  expectedCount: number;
+  scannedCount: number;
+  canComplete: boolean;
+  unresolvedCount?: number;
+  // BE-PCL-004 (đề xuất): cờ riêng tách bạch khỏi `canComplete`. Chưa có thì
+  // undefined và FE suy theo số đếm.
+  allDelivered?: boolean | null;
+};
+
+export type DestinationReconcileMeta = {
+  label: string;
+  tone: Tone;
+  // Câu giải thích thêm khi trạng thái không phải trắng-đen. null = không cần.
+  hint: string | null;
+};
+
+export function destinationReconcileMeta(
+  result: DestinationReconcileCounts,
+): DestinationReconcileMeta {
+  const unresolved = result.unresolvedCount ?? 0;
+  // Cờ của backend thắng khi có; không có thì đủ số VÀ không còn kiện treo.
+  const allDelivered =
+    result.allDelivered ??
+    (result.scannedCount >= result.expectedCount && unresolved === 0);
+
+  if (result.expectedCount === 0) {
+    return {
+      label: "Chuyến không có kiện",
+      tone: "neutral",
+      hint: null,
+    };
+  }
+
+  if (allDelivered) {
+    return { label: "Xong, giao đủ kiện", tone: "success", hint: null };
+  }
+
+  // Còn thiếu kiện nhưng backend vẫn cho đóng chuyến: phải nói rõ là "đủ điều
+  // kiện hoàn tất", tuyệt đối không được để chữ "giao đủ" xuất hiện.
+  if (result.canComplete) {
+    return {
+      label: "Đủ điều kiện hoàn tất với sự cố đã ghi nhận",
+      tone: "warning",
+      hint: "Vẫn còn kiện chưa giao. Kiểm lại danh sách bên dưới trước khi rời bến.",
+    };
+  }
+
+  return {
+    label: "Còn kiện chưa giao",
+    tone: "danger",
+    hint: null,
   };
 }

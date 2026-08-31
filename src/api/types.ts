@@ -707,8 +707,14 @@ export type DestinationReconcileData = {
   scannedCount: number;
   manualExceptionCount: number;
   unresolvedParcels: StopReconcileUnresolvedParcel[] | null;
+  // CẢNH BÁO: `canComplete` = "được phép đóng chuyến", KHÔNG phải "đã giao đủ
+  // kiện" — nó vẫn true khi chuyến chỉ còn sự cố đã được ghi nhận. Đừng map
+  // thẳng sang nhãn thành công, dùng `destinationReconcileMeta()` (FE-PCL-004).
   canComplete: boolean;
   requiresDriverCompletion: boolean;
+  // BE-PCL-004: cờ riêng cho "mọi kiện dự kiến đều đã giao". Backend hiện chưa
+  // trả nên để optional; có thì nó thắng suy luận theo số đếm của FE.
+  allDelivered?: boolean | null;
 };
 
 export type StopReconcileData = {
@@ -1135,6 +1141,16 @@ export type NotificationAction =
   | { type: "OPEN_TRIP_DETAIL"; params: { tripId: string } }
   | { type: "OPEN_TRIP_TRACKING"; params: { tripId: string } }
   | { type: "OPEN_PARCEL_DETAIL"; params: { parcelId: string } }
+  // FE-PCL-003: phiếu chờ tài xế duyệt. Hai loại phiếu dùng chung action này,
+  // phân biệt bằng tham số nào có mặt:
+  //   - `parcelId`  → phiếu báo sự cố custody của một kiện;
+  //   - `requestId` → phiếu xin rời điểm khi còn kiện chưa đối soát.
+  // Chưa có trong contract Phase 11 — BE phải bổ sung, nếu không thông báo
+  // duyệt phiếu chỉ còn đường mở bằng URL web (và rơi ra trình duyệt).
+  | {
+      type: "OPEN_PARCEL_APPROVAL";
+      params: { parcelId?: string; requestId?: string };
+    }
   | { type: "OPEN_WALLET"; params: Record<string, never> }
   | { type: "OPEN_SUBSCRIPTION"; params: Record<string, never> }
   | { type: "OPEN_SHUTTLE_TRACKING"; params: { shuttleTripId: string } }
