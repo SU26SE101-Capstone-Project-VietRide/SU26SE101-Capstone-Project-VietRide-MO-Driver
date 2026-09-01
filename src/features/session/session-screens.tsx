@@ -3,7 +3,6 @@ import { Redirect, useRouter } from "expo-router";
 import { useState } from "react";
 import {
     Pressable,
-    ScrollView,
     StyleSheet,
     Text,
     TextInput,
@@ -11,6 +10,7 @@ import {
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
+import { KeyboardAwareScroll } from "@/components/keyboard-aware-scroll";
 import { Fonts, Spacing, type Palette } from "@/constants/theme";
 import { NotificationBell } from "@/features/operations/role-screens";
 import {
@@ -67,104 +67,105 @@ export function LoginScreen() {
   };
 
   return (
-    <View style={[styles.screen, { backgroundColor: theme.background }]}>
-      <View pointerEvents="none" style={styles.orbPrimary} />
-      <View pointerEvents="none" style={styles.orbSecondary} />
+    // Màn này nằm ngoài OperationsScreen nên phải tự bọc KeyboardAwareScroll,
+    // không thì ô mật khẩu và nút submit nằm dưới bàn phím (Android edge-to-edge
+    // không còn co cửa sổ theo bàn phím nữa).
+    <KeyboardAwareScroll
+      style={{ backgroundColor: theme.background }}
+      contentContainerStyle={styles.content}
+      paddingTop={Math.max(insets.top, Spacing.five)}
+      extraBottomPadding={Spacing.five}
+      background={
+        <>
+          <View pointerEvents="none" style={styles.orbPrimary} />
+          <View pointerEvents="none" style={styles.orbSecondary} />
+        </>
+      }
+    >
+      <View style={styles.pageHeader}>
+        <Text style={styles.pageEyebrow}>VietRide Crew Access</Text>
+        <Text style={styles.pageTitle}>Đăng nhập điều hành chuyến</Text>
+        <Text style={styles.pageSubtitle}>
+          Đăng nhập bằng tài khoản tài xế hoặc phụ xe do nhà xe cấp.
+        </Text>
+      </View>
 
-      <ScrollView
-        contentContainerStyle={[
-          styles.content,
-          {
-            paddingTop: Math.max(insets.top, Spacing.five),
-            paddingBottom: Math.max(insets.bottom, Spacing.five),
-          },
-        ]}
-      >
-        <View style={styles.pageHeader}>
-          <Text style={styles.pageEyebrow}>VietRide Crew Access</Text>
-          <Text style={styles.pageTitle}>Đăng nhập điều hành chuyến</Text>
-          <Text style={styles.pageSubtitle}>
-            Đăng nhập bằng tài khoản tài xế hoặc phụ xe do nhà xe cấp.
-          </Text>
-        </View>
+      <SurfaceCard accent delay={0}>
+        <SectionTitle title="Đăng nhập" />
 
-        <SurfaceCard accent delay={0}>
-          <SectionTitle title="Đăng nhập" />
+        <View style={styles.inputStack}>
+          <View style={styles.inputGroup}>
+            <Text style={styles.inputLabel}>Email</Text>
+            <TextInput
+              autoCapitalize="none"
+              autoCorrect={false}
+              keyboardType="email-address"
+              placeholder="email@nhaxe.vn"
+              placeholderTextColor={theme.placeholder}
+              style={styles.input}
+              value={email}
+              onChangeText={setEmail}
+            />
+          </View>
 
-          <View style={styles.inputStack}>
-            <View style={styles.inputGroup}>
-              <Text style={styles.inputLabel}>Email</Text>
+          <View style={styles.inputGroup}>
+            <Text style={styles.inputLabel}>Mật khẩu</Text>
+            {/* Cùng pattern con mắt hiện/ẩn với forgot-password-screen. */}
+            <View style={styles.passwordField}>
               <TextInput
                 autoCapitalize="none"
                 autoCorrect={false}
-                keyboardType="email-address"
-                placeholder="email@nhaxe.vn"
+                placeholder="••••••••"
                 placeholderTextColor={theme.placeholder}
-                style={styles.input}
-                value={email}
-                onChangeText={setEmail}
+                secureTextEntry={!showPassword}
+                style={[styles.input, styles.passwordInput]}
+                value={password}
+                onChangeText={setPassword}
               />
-            </View>
-
-            <View style={styles.inputGroup}>
-              <Text style={styles.inputLabel}>Mật khẩu</Text>
-              {/* Cùng pattern con mắt hiện/ẩn với forgot-password-screen. */}
-              <View style={styles.passwordField}>
-                <TextInput
-                  autoCapitalize="none"
-                  autoCorrect={false}
-                  placeholder="••••••••"
-                  placeholderTextColor={theme.placeholder}
-                  secureTextEntry={!showPassword}
-                  style={[styles.input, styles.passwordInput]}
-                  value={password}
-                  onChangeText={setPassword}
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel={
+                  showPassword ? "Ẩn mật khẩu" : "Hiện mật khẩu"
+                }
+                hitSlop={8}
+                onPress={() => setShowPassword((visible) => !visible)}
+                style={styles.passwordToggle}
+              >
+                <MaterialIcons
+                  name={showPassword ? "visibility-off" : "visibility"}
+                  size={22}
+                  color={theme.textSecondary}
                 />
-                <Pressable
-                  accessibilityRole="button"
-                  accessibilityLabel={
-                    showPassword ? "Ẩn mật khẩu" : "Hiện mật khẩu"
-                  }
-                  hitSlop={8}
-                  onPress={() => setShowPassword((visible) => !visible)}
-                  style={styles.passwordToggle}
-                >
-                  <MaterialIcons
-                    name={showPassword ? "visibility-off" : "visibility"}
-                    size={22}
-                    color={theme.textSecondary}
-                  />
-                </Pressable>
-              </View>
+              </Pressable>
             </View>
           </View>
+        </View>
 
-          {errorMessage ? (
-            <View style={styles.errorBanner}>
-              <StatusChip label="Đăng nhập thất bại" tone="danger" />
-              <Text style={styles.errorText}>{errorMessage}</Text>
-            </View>
-          ) : null}
-
-          {/* Xếp dọc: nút chính full-width, link phụ nằm dưới — tránh chia đôi
-              bề ngang làm "Quên mật khẩu?" gãy dòng. */}
-          <View style={styles.actionStack}>
-            <ActionButton
-              label={submitting ? "Đang đăng nhập…" : "Đăng nhập"}
-              tone="primary"
-              disabled={submitting}
-              onPress={() => void handleLogin()}
-            />
-            <ActionButton
-              label="Quên mật khẩu?"
-              tone="ghost"
-              disabled={submitting}
-              onPress={() => router.push("/auth/forgot-password")}
-            />
+        {errorMessage ? (
+          <View style={styles.errorBanner}>
+            <StatusChip label="Đăng nhập thất bại" tone="danger" />
+            <Text style={styles.errorText}>{errorMessage}</Text>
           </View>
-        </SurfaceCard>
-      </ScrollView>
-    </View>
+        ) : null}
+
+        {/* Xếp dọc: nút chính full-width, link phụ nằm dưới — tránh chia đôi
+            bề ngang làm "Quên mật khẩu?" gãy dòng. */}
+        <View style={styles.actionStack}>
+          <ActionButton
+            label={submitting ? "Đang đăng nhập…" : "Đăng nhập"}
+            tone="primary"
+            disabled={submitting}
+            onPress={() => void handleLogin()}
+          />
+          <ActionButton
+            label="Quên mật khẩu?"
+            tone="ghost"
+            disabled={submitting}
+            onPress={() => router.push("/auth/forgot-password")}
+          />
+        </View>
+      </SurfaceCard>
+    </KeyboardAwareScroll>
   );
 }
 

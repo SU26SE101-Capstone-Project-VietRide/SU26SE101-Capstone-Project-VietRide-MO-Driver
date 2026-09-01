@@ -222,7 +222,12 @@ export function ShuttleManifestScreen() {
             {manifest.status === "SCHEDULED" ? (
               <ActionButton
                 icon="play-arrow"
-                label="Bắt đầu chuyến"
+                label={
+                  lifecycle.start.isPending
+                    ? "Đang bắt đầu chuyến…"
+                    : "Bắt đầu chuyến"
+                }
+                loading={lifecycle.start.isPending}
                 disabled={lifecycle.isBusy}
                 onPress={() => lifecycle.start.mutate()}
               />
@@ -244,7 +249,12 @@ export function ShuttleManifestScreen() {
               <>
                 <ActionButton
                   icon="check-circle"
-                  label="Hoàn tất chuyến"
+                  label={
+                    lifecycle.complete.isPending
+                      ? "Đang hoàn tất chuyến…"
+                      : "Hoàn tất chuyến"
+                  }
+                  loading={lifecycle.complete.isPending}
                   disabled={lifecycle.isBusy || !canComplete}
                   onPress={() => lifecycle.complete.mutate()}
                 />

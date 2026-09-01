@@ -3,7 +3,6 @@ import { useLocalSearchParams, useRouter } from "expo-router";
 import { useState } from "react";
 import {
     Pressable,
-    ScrollView,
     StyleSheet,
     Text,
     TextInput,
@@ -13,6 +12,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { setInitialPassword } from "@/api/auth";
 import { authErrorMessage } from "@/features/session/auth-errors";
+import { KeyboardAwareScroll } from "@/components/keyboard-aware-scroll";
 import { Fonts, Spacing, type Palette } from "@/constants/theme";
 import {
     ActionButton,
@@ -191,31 +191,31 @@ export function SetPasswordScreen() {
   };
 
   return (
-    <View style={[styles.screen, { backgroundColor: theme.background }]}>
-      <View pointerEvents="none" style={styles.orbPrimary} />
-      <View pointerEvents="none" style={styles.orbSecondary} />
+    // Màn này nằm ngoài OperationsScreen nên phải tự bọc KeyboardAwareScroll,
+    // không thì ô mật khẩu và nút submit nằm dưới bàn phím (Android edge-to-edge
+    // không còn co cửa sổ theo bàn phím nữa).
+    <KeyboardAwareScroll
+      style={{ backgroundColor: theme.background }}
+      contentContainerStyle={styles.content}
+      paddingTop={Math.max(insets.top, Spacing.five)}
+      extraBottomPadding={Spacing.five}
+      background={
+        <>
+          <View pointerEvents="none" style={styles.orbPrimary} />
+          <View pointerEvents="none" style={styles.orbSecondary} />
+        </>
+      }
+    >
+      <View style={styles.pageHeader}>
+        <Text style={styles.pageEyebrow}>VietRide Crew Access</Text>
+        <Text style={styles.pageTitle}>Thiết lập mật khẩu</Text>
+        <Text style={styles.pageSubtitle}>
+          Tạo mật khẩu cho tài khoản tài xế / phụ xe để bắt đầu sử dụng app.
+        </Text>
+      </View>
 
-      <ScrollView
-        contentContainerStyle={[
-          styles.content,
-          {
-            paddingTop: Math.max(insets.top, Spacing.five),
-            paddingBottom: Math.max(insets.bottom, Spacing.five),
-          },
-        ]}
-        keyboardShouldPersistTaps="handled"
-      >
-        <View style={styles.pageHeader}>
-          <Text style={styles.pageEyebrow}>VietRide Crew Access</Text>
-          <Text style={styles.pageTitle}>Thiết lập mật khẩu</Text>
-          <Text style={styles.pageSubtitle}>
-            Tạo mật khẩu cho tài khoản tài xế / phụ xe để bắt đầu sử dụng app.
-          </Text>
-        </View>
-
-        {renderBody()}
-      </ScrollView>
-    </View>
+      {renderBody()}
+    </KeyboardAwareScroll>
   );
 }
 

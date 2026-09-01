@@ -592,23 +592,19 @@ export function DriverTripScreen() {
               />
             </View>
 
+            {/* Không kèm đoạn mô tả "bấm khi xe rời bến…": nhãn nút đã nói đủ,
+                thêm chữ chỉ làm card dài ra và đẩy các nút khác xuống. */}
             {tripBoarding ? (
-              <>
-                <ActionButton
-                  icon="play-arrow"
-                  label={
-                    startTripMutation.isPending
-                      ? "Đang bắt đầu chuyến…"
-                      : "Bắt đầu chuyến"
-                  }
-                  disabled={startTripMutation.isPending}
-                  onPress={() => startTripMutation.mutate()}
-                />
-                <Text style={styles.metaText}>
-                  Bấm khi xe rời bến — chuyến chuyển sang “Đang chạy”, mở khoá
-                  xác nhận điểm dừng và phát hành trình.
-                </Text>
-              </>
+              <ActionButton
+                icon="play-arrow"
+                label={
+                  startTripMutation.isPending
+                    ? "Đang bắt đầu chuyến…"
+                    : "Bắt đầu chuyến"
+                }
+                loading={startTripMutation.isPending}
+                onPress={() => startTripMutation.mutate()}
+              />
             ) : null}
             {startError ? (
               <Text style={styles.delayText}>{startError}</Text>
@@ -624,11 +620,10 @@ export function DriverTripScreen() {
                       : "Hoàn tất chuyến"
                   }
                   tone="secondary"
+                  loading={completeTripMutation.isPending}
                   // FE-PCL-008: thiếu bước nào thì khoá nút và nói rõ bước đó,
                   // KHÔNG hỏi "vẫn hoàn tất?" rồi cho bấm qua.
-                  disabled={
-                    completeTripMutation.isPending || completionBlocker != null
-                  }
+                  disabled={completionBlocker != null}
                   onPress={() => completeTripMutation.mutate()}
                 />
                 {completionBlocker ? (
@@ -656,11 +651,8 @@ export function DriverTripScreen() {
           </SurfaceCard>
 
           <SurfaceCard delay={20}>
-            <SectionTitle
-              icon="map"
-              title="Bản đồ tuyến"
-              subtitle="Đường đi và các điểm dừng của chuyến."
-            />
+            {/* Bản đồ tự nói rõ nó là gì — bỏ subtitle mô tả lại tiêu đề. */}
+            <SectionTitle icon="map" title="Bản đồ tuyến" />
             {routeQuery.isLoading ? (
               <Text style={styles.metaText}>Đang tải bản đồ tuyến…</Text>
             ) : routeQuery.isError ? (
@@ -814,10 +806,17 @@ function IncidentReportScreen({
         ? "Chọn loại sự cố trước khi gửi."
         : null;
 
+  // incident.isPending CHƯA phủ hết thời gian chờ: getCurrentCoords() lấy GPS
+  // trước khi mutation bắt đầu và có thể mất vài giây, quãng đó nút vẫn sáng
+  // như chưa bấm nên phụ xe bấm lại 2-3 lần → 2-3 báo cáo trùng lên điều hành.
+  // sending bao trọn cả lấy toạ độ + gọi API, và là cờ khoá nút duy nhất.
+  const [sending, setSending] = useState(false);
+
   const send = async (category: IncidentCategory) => {
     // Rung xác nhận: tài xế đang trên xe rung xóc, phản hồi xúc giác đáng tin
     // hơn hiệu ứng thị giác. Lỗi haptics (máy tắt rung) không được chặn việc gửi.
     // Toạ độ là best-effort: không có quyền vị trí vẫn phải gửi được sự cố.
+    setSending(true);
     const coords = await getCurrentCoords();
     const description = incidentDescription.trim();
 
@@ -832,6 +831,7 @@ function IncidentReportScreen({
           void Haptics.notificationAsync(
             Haptics.NotificationFeedbackType.Success,
           );
+          setSending(false);
           setSubmitted(data);
           setIncidentDescription("");
           setIncidentCategory(null);
@@ -840,6 +840,7 @@ function IncidentReportScreen({
           void Haptics.notificationAsync(
             Haptics.NotificationFeedbackType.Error,
           );
+          setSending(false);
         },
       },
     );
@@ -847,7 +848,8 @@ function IncidentReportScreen({
 
   // Chốt lại trước khi gửi — thao tác một chiều, không có nút thu hồi.
   const confirmAndSend = () => {
-    if (!tripId || !incidentCategory) {
+    // Chặn cả trường hợp bấm nhanh hai lần trước khi React kịp vẽ lại nút.
+    if (!tripId || !incidentCategory || sending) {
       return;
     }
 
@@ -1044,9 +1046,10 @@ function IncidentReportScreen({
 
         <ActionButton
           icon="send"
-          label={incident.isPending ? "Đang gửi…" : "Gửi báo cáo"}
+          label={sending ? "Đang gửi báo cáo…" : "Gửi báo cáo"}
           tone="danger"
-          disabled={blockedReason != null || incident.isPending}
+          loading={sending}
+          disabled={blockedReason != null}
           onPress={confirmAndSend}
         />
 

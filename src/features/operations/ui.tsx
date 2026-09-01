@@ -1,30 +1,24 @@
 import { MaterialIcons } from "@expo/vector-icons";
 import {
     useCallback,
-    useEffect,
-    useRef,
     useState,
     type ComponentProps,
     type PropsWithChildren,
     type ReactNode,
 } from "react";
 import {
-    Dimensions,
-    Keyboard,
-    KeyboardAvoidingView,
-    Platform,
+    ActivityIndicator,
     Pressable,
     RefreshControl,
-    ScrollView,
     StyleSheet,
     Text,
-    TextInput,
     View,
     type ViewStyle,
 } from "react-native";
 import Animated, { FadeInDown } from "react-native-reanimated";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
+import { KeyboardAwareScroll } from "@/components/keyboard-aware-scroll";
 import { Fonts, Spacing, type Palette } from "@/constants/theme";
 import { type Tone } from "@/features/operations/mock-data";
 import { useSession } from "@/features/session/session-context";
@@ -73,95 +67,6 @@ export function OperationsScreen({
           color: theme.tones.primary.text,
         };
 
-  const scrollRef = useRef<ScrollView>(null);
-  const rootRef = useRef<View>(null);
-  const keyboardOpen = useRef(false);
-  // Android edge-to-edge (mặc định từ SDK 56) KHÔNG còn co cửa sổ theo bàn phím
-  // nữa — adjustResize vô hiệu, bàn phím phủ đè lên ScrollView. Phải tự cộng
-  // chiều cao bàn phím vào padding đáy thì nội dung mới cuộn lên trên nó được.
-  const [keyboardHeight, setKeyboardHeight] = useState(0);
-
-  // Vị trí cuộn hiện tại + chiều cao bàn phím, giữ trong ref để tính toán mà
-  // không kích hoạt render lại giữa lúc đang gõ.
-  const scrollY = useRef(0);
-  const keyboardTop = useRef(Number.POSITIVE_INFINITY);
-
-  // Giữ ô ĐANG GÕ nằm trên bàn phím.
-  //
-  // Bản cũ luôn `scrollToEnd()` với giả định "form nào cũng nằm cuối màn". Giả
-  // định đó sai ở màn Hàng hoá: panel cân/đo nằm trong card giữa danh sách, nên
-  // mỗi lần gõ là màn nhảy xuống tận cuối danh sách, ô nhập biến mất khỏi tầm
-  // mắt. Giờ đo đúng ô đang focus rồi chỉ cuộn vừa đủ để nó nổi trên bàn phím.
-  const keepInputVisible = useCallback(() => {
-    // Chỉ cuộn khi bàn phím đang mở (bàn phím mở ⇒ đang gõ ở đâu đó), tránh
-    // giật màn khi nội dung đổi vì lý do khác — query trả về, card mở rộng…
-    if (!keyboardOpen.current) {
-      return;
-    }
-
-    const focused = TextInput.State.currentlyFocusedInput();
-    if (!focused) {
-      // Không xác định được ô nào đang gõ (bàn phím của WebView, ô ngoài
-      // ScrollView…) → giữ hành vi cũ cho chắc.
-      setTimeout(() => scrollRef.current?.scrollToEnd({ animated: false }), 50);
-      return;
-    }
-
-    // Hai nhịp: gõ xong layout chưa kịp co theo bàn phím, nhịp 300ms bù lại.
-    const nudge = () => {
-      focused.measureInWindow((_x, y, _width, height) => {
-        // Chừa một khoảng thở dưới ô để còn thấy được viền và dòng gợi ý.
-        const margin = Spacing.four;
-        const overlap = y + height + margin - keyboardTop.current;
-        if (overlap <= 0) {
-          // Ô đã nằm trên bàn phím rồi thì ĐỪNG cuộn — cuộn thừa chính là cảm
-          // giác "màn tự nhảy" mà người dùng thấy.
-          return;
-        }
-        scrollRef.current?.scrollTo({
-          y: scrollY.current + overlap,
-          animated: false,
-        });
-      });
-    };
-    setTimeout(nudge, 50);
-    setTimeout(nudge, 300);
-  }, []);
-
-  useEffect(() => {
-    const show = Keyboard.addListener("keyboardDidShow", (event) => {
-      keyboardOpen.current = true;
-
-      // Bàn phím đo từ ĐÁY MÀN HÌNH, còn ScrollView kết thúc ở phía trên tab bar
-      // → lấy nguyên endCoordinates.height là dư đúng chiều cao tab bar. Đo vị
-      // trí đáy thật của màn rồi chỉ bù phần thực sự bị bàn phím chồng lên.
-      rootRef.current?.measureInWindow((_x, y, _width, height) => {
-        // "screen" chứ không phải "window": ở chế độ edge-to-edge, window height
-        // đã trừ mất thanh điều hướng nên keyboardTop bị tính thấp đi, padding
-        // thiếu đúng chiều cao thanh đó và nút Gửi vẫn bị cắt một nửa.
-        // measureInWindow có lúc trả y âm (đo ngay trong lúc layout còn dịch
-        // chuyển) → kẹp về 0, không thì padding thiếu đúng phần âm đó và nút
-        // dưới cùng vẫn bị bàn phím cắt.
-        const screenHeight = Dimensions.get("screen").height;
-        const top = screenHeight - event.endCoordinates.height;
-        keyboardTop.current = top;
-        const bottom = Math.max(0, y) + height;
-        setKeyboardHeight(Math.max(0, bottom - top));
-        keepInputVisible();
-      });
-    });
-    const hide = Keyboard.addListener("keyboardDidHide", () => {
-      keyboardOpen.current = false;
-      keyboardTop.current = Number.POSITIVE_INFINITY;
-      setKeyboardHeight(0);
-    });
-
-    return () => {
-      show.remove();
-      hide.remove();
-    };
-  }, [keepInputVisible]);
-
   const handleRefresh = useCallback(() => {
     if (!onRefresh) {
       return;
@@ -173,102 +78,26 @@ export function OperationsScreen({
   }, [onRefresh]);
 
   return (
-    <KeyboardAvoidingView
-      // iOS không tự co layout khi bàn phím hiện → phải đệm bằng padding.
-      // Android đã có windowSoftInputMode=adjustResize nên để undefined, thêm
-      // behavior vào là bị đẩy hai lần.
-      behavior={Platform.OS === "ios" ? "padding" : undefined}
-      style={[styles.screen, { backgroundColor: theme.background }]}
-    >
-      {/* View đo đạc: KeyboardAvoidingView không cho gắn ref kiểu View nên đo
-          trên lớp bọc bên trong (cùng kích thước). */}
-      <View ref={rootRef} collapsable={false} style={styles.screen}>
-        <View pointerEvents="none" style={styles.orbPrimary} />
-        <View pointerEvents="none" style={styles.orbSecondary} />
-
-      <ScrollView
-        ref={scrollRef}
-        style={styles.scroll}
-        // Ô mô tả là multiline, gõ dài thì nó cao dần xuống dưới và chui vào
-        // vùng bàn phím → mỗi lần nội dung cao lên thì cuộn theo.
-        onContentSizeChange={keepInputVisible}
-        // Cần vị trí cuộn thật để tính "cuộn thêm bao nhiêu là vừa đủ".
-        onScroll={(event) => {
-          scrollY.current = event.nativeEvent.contentOffset.y;
-        }}
-        scrollEventThrottle={16}
-        // Bàn phím: tự chừa chỗ để ô nhập/nút bấm cuối form không bị che, và cho
-        // phép chạm thẳng vào nút khi bàn phím đang mở (mặc định phải chạm 2 lần
-        // — lần đầu chỉ để đóng bàn phím).
-        automaticallyAdjustKeyboardInsets
-        keyboardShouldPersistTaps="handled"
-        keyboardDismissMode="on-drag"
-        refreshControl={
-          onRefresh ? (
-            <RefreshControl
-              refreshing={refreshing}
-              onRefresh={handleRefresh}
-              tintColor={theme.primary}
-              colors={[theme.primary]}
-              progressBackgroundColor={theme.backgroundElement}
-            />
-          ) : undefined
-        }
-        contentContainerStyle={[
-          styles.content,
-          {
-            paddingTop: Math.max(insets.top, Spacing.four),
-            // Tab bar là sibling nằm dưới TabSlot (không phủ lên nội dung) nên
-            // KHÔNG cộng thêm BottomTabInset — cộng vào là thừa ra cả một khoảng
-            // trắng bằng chiều cao tab bar. insets.bottom cho các màn ngoài tab
-            // (Cài đặt) vì lúc đó ScrollView chạm đáy máy.
-            // Bàn phím mở thì chính nó đã phủ lên thanh điều hướng → cộng thêm
-            // insets.bottom nữa là thừa ra một mảng trống.
-            paddingBottom:
-              (keyboardHeight > 0 ? keyboardHeight : insets.bottom) +
-              Spacing.four,
-          },
-        ]}
-      >
-        <View style={styles.pageHeader}>
-          {/* Nhãn vai trò nằm chung hàng với nút chuông/cài đặt để không chừa
-              khoảng trống bên trái, tiêu đề tụt xuống ngay dưới. */}
-          <View style={styles.pageHeaderTop}>
-            {onBack ? (
-              <Pressable
-                accessibilityRole="button"
-                accessibilityLabel="Quay lại"
-                hitSlop={8}
-                onPress={onBack}
-                style={styles.backButton}
-              >
-                <MaterialIcons name="arrow-back" size={22} color={theme.text} />
-              </Pressable>
-            ) : null}
-            {headerLeft}
-            <View style={styles.pageBadge}>
-              <MaterialIcons
-                name={roleBadge.icon}
-                size={14}
-                color={roleBadge.color}
-              />
-              <Text style={[styles.pageEyebrow, { color: roleBadge.color }]}>
-                {roleBadge.label}
-              </Text>
-            </View>
-            <View style={styles.pageHeaderActions}>{headerRight}</View>
-          </View>
-          <View style={styles.pageHeaderTitles}>
-            <Text style={styles.pageTitle}>{title}</Text>
-          </View>
-          <Text style={styles.pageSubtitle}>{subtitle}</Text>
-        </View>
-          {children}
-        </ScrollView>
-
-        {/* Android bật edge-to-edge nên nội dung cuộn lên sẽ chạy dưới thanh
-            trạng thái (giờ/pin/sóng đè lên chữ). Dải này che đúng chiều cao safe
-            area trên cùng, vẽ đè lên ScrollView. */}
+    // Toàn bộ xử lý bàn phím nằm trong KeyboardAwareScroll — xem file đó.
+    <KeyboardAwareScroll
+      style={{ backgroundColor: theme.background }}
+      scrollStyle={styles.scroll}
+      contentContainerStyle={styles.content}
+      // Tab bar là sibling nằm dưới TabSlot (không phủ lên nội dung) nên KHÔNG
+      // cộng thêm BottomTabInset — cộng vào là thừa ra cả một khoảng trắng bằng
+      // chiều cao tab bar.
+      paddingTop={Math.max(insets.top, Spacing.four)}
+      extraBottomPadding={Spacing.four}
+      background={
+        <>
+          <View pointerEvents="none" style={styles.orbPrimary} />
+          <View pointerEvents="none" style={styles.orbSecondary} />
+        </>
+      }
+      foreground={
+        /* Android bật edge-to-edge nên nội dung cuộn lên sẽ chạy dưới thanh
+           trạng thái (giờ/pin/sóng đè lên chữ). Dải này che đúng chiều cao safe
+           area trên cùng, vẽ đè lên ScrollView. */
         <View
           pointerEvents="none"
           style={[
@@ -276,8 +105,54 @@ export function OperationsScreen({
             { height: insets.top, backgroundColor: theme.background },
           ]}
         />
+      }
+      refreshControl={
+        onRefresh ? (
+          <RefreshControl
+            refreshing={refreshing}
+            onRefresh={handleRefresh}
+            tintColor={theme.primary}
+            colors={[theme.primary]}
+            progressBackgroundColor={theme.backgroundElement}
+          />
+        ) : undefined
+      }
+    >
+      <View style={styles.pageHeader}>
+        {/* Nhãn vai trò nằm chung hàng với nút chuông/cài đặt để không chừa
+            khoảng trống bên trái, tiêu đề tụt xuống ngay dưới. */}
+        <View style={styles.pageHeaderTop}>
+          {onBack ? (
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel="Quay lại"
+              hitSlop={8}
+              onPress={onBack}
+              style={styles.backButton}
+            >
+              <MaterialIcons name="arrow-back" size={22} color={theme.text} />
+            </Pressable>
+          ) : null}
+          {headerLeft}
+          <View style={styles.pageBadge}>
+            <MaterialIcons
+              name={roleBadge.icon}
+              size={14}
+              color={roleBadge.color}
+            />
+            <Text style={[styles.pageEyebrow, { color: roleBadge.color }]}>
+              {roleBadge.label}
+            </Text>
+          </View>
+          <View style={styles.pageHeaderActions}>{headerRight}</View>
+        </View>
+        <View style={styles.pageHeaderTitles}>
+          <Text style={styles.pageTitle}>{title}</Text>
+        </View>
+        <Text style={styles.pageSubtitle}>{subtitle}</Text>
       </View>
-    </KeyboardAvoidingView>
+      {children}
+    </KeyboardAwareScroll>
   );
 }
 
@@ -428,6 +303,7 @@ export function ActionButton({
   disabled = false,
   icon,
   label,
+  loading = false,
   onPress,
   small = false,
   tone = "primary",
@@ -435,6 +311,10 @@ export function ActionButton({
   disabled?: boolean;
   icon?: MaterialIconName;
   label: string;
+  // loading: thao tác đang chạy — nút tự khoá và đổi icon thành spinner. Dùng
+  // cho mọi thao tác gửi lên server: không có dấu hiệu đang chạy thì phụ xe
+  // tưởng chưa bấm, bấm lại 2-3 lần và tạo ra 2-3 request trùng.
+  loading?: boolean;
   onPress: () => void;
   small?: boolean;
   tone?: "primary" | "secondary" | "ghost" | "danger";
@@ -442,12 +322,13 @@ export function ActionButton({
   const theme = useTheme();
   const styles = useThemedStyles(makeStyles);
   const buttonStyles = getButtonStyles(tone, theme);
+  const blocked = disabled || loading;
 
   return (
     <Pressable
       accessibilityRole="button"
-      accessibilityState={{ disabled }}
-      disabled={disabled}
+      accessibilityState={{ busy: loading, disabled: blocked }}
+      disabled={blocked}
       onPress={onPress}
       style={({ pressed }) => [
         styles.button,
@@ -455,13 +336,17 @@ export function ActionButton({
         {
           backgroundColor: buttonStyles.backgroundColor,
           borderColor: buttonStyles.borderColor,
-          opacity: disabled ? 0.4 : pressed ? 0.88 : 1,
-          transform: [{ scale: pressed && !disabled ? 0.985 : 1 }],
+          // Đang loading vẫn giữ nút gần như sáng bình thường (0.8) để spinner
+          // còn đọc được — khác hẳn trạng thái khoá vì thiếu điều kiện (0.4).
+          opacity: loading ? 0.8 : disabled ? 0.4 : pressed ? 0.88 : 1,
+          transform: [{ scale: pressed && !blocked ? 0.985 : 1 }],
         },
       ]}
     >
       <View style={styles.buttonContent}>
-        {icon ? (
+        {loading ? (
+          <ActivityIndicator size="small" color={buttonStyles.textColor} />
+        ) : icon ? (
           <MaterialIcons
             name={icon}
             size={small ? 16 : 18}
