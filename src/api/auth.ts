@@ -1,4 +1,4 @@
-import { apiRequest, refreshTokens } from "./client";
+import { apiRequest, expiresAtFrom, refreshTokens } from "./client";
 import { clearTokens, getTokens, setTokens } from "./token-storage";
 import type {
   AuthUser,
@@ -25,6 +25,7 @@ export async function login(
   await setTokens({
     accessToken: data.accessToken,
     refreshToken: data.refreshToken,
+    expiresAt: expiresAtFrom(data.expiresInSeconds),
   });
 
   return data;

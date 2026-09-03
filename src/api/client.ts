@@ -212,8 +212,40 @@ async function doRefresh(): Promise<LoginData | null> {
   await setTokens({
     accessToken: data.accessToken,
     refreshToken: data.refreshToken,
+    expiresAt: expiresAtFrom(data.expiresInSeconds),
   });
   return data;
+}
+
+// Hạn access token quy về epoch ms. Backend trả `expiresInSeconds`; thiếu/không
+// hợp lệ thì trả null = "không biết hạn", client rơi về hành vi cũ (chỉ refresh
+// khi gặp 401) thay vì refresh vô nghĩa mỗi request.
+export function expiresAtFrom(
+  expiresInSeconds: number | null | undefined,
+): number | null {
+  if (typeof expiresInSeconds !== "number" || !Number.isFinite(expiresInSeconds)) {
+    return null;
+  }
+
+  return Date.now() + expiresInSeconds * 1000;
+}
+
+// Đổi token TRƯỚC khi hết hạn thay vì chờ 401. Lý do không chỉ là tiết kiệm một
+// vòng 401: access token mang claim `role` và `operatorId` (docs/Implements/
+// API-Driver-Assistant.md §Access token), nên token cũ giữ nguyên phân quyền
+// tại thời điểm đăng nhập. Nhân sự được nhà xe giao tuyến/đổi vai sau đó vẫn
+// gọi API bằng claim cũ và không thấy chuyến mới cho tới khi logout/login.
+//
+// 60s biên an toàn: đủ cho một request chậm đi hết vòng mà token chưa lật hạn
+// giữa đường.
+const TOKEN_REFRESH_SKEW_MS = 60_000;
+
+function isExpiringSoon(expiresAt: number | null): boolean {
+  if (expiresAt == null) {
+    return false;
+  }
+
+  return Date.now() >= expiresAt - TOKEN_REFRESH_SKEW_MS;
 }
 
 export type ApiRequestOptions = {
@@ -305,7 +337,22 @@ async function requestInternal<T>(
   }
 
   if (auth) {
-    const tokens = await getTokens();
+    let tokens = await getTokens();
+
+    // Token sắp hết hạn → đổi ngay, đừng gửi đi để nhận 401 rồi mới đổi.
+    // `isRetryAfterRefresh` chặn vòng lặp: nhánh 401 bên dưới vừa refresh xong
+    // thì lần gọi lại không refresh nữa. refreshTokens() là single-flight nên
+    // nhiều query cùng lúc chỉ tạo một request refresh.
+    if (tokens && !isRetryAfterRefresh && isExpiringSoon(tokens.expiresAt)) {
+      try {
+        await refreshTokens();
+        tokens = await getTokens();
+      } catch {
+        // Rớt mạng lúc refresh: cứ gửi token cũ. Còn hạn thì request vẫn chạy,
+        // hết hạn thật thì rơi vào nhánh 401 quen thuộc.
+      }
+    }
+
     if (tokens) {
       headers.Authorization = `Bearer ${tokens.accessToken}`;
     }

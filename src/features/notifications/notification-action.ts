@@ -302,6 +302,20 @@ export function invalidationKeysForAction(
   const keys: unknown[][] = [];
   const tripId = stringParam(action.params, "tripId");
 
+  // Được giao thêm/đổi chuyến (TRIP_ASSIGNED và TRIP_UPDATE đều về
+  // OPEN_TRIP_DETAIL) làm đổi CHÍNH danh sách ca làm việc, mà `schedule` là nơi
+  // màn Lịch làm việc, bộ chọn chuyến và `useActiveTrip` cùng đọc. Thiếu key
+  // này thì tín hiệu "vừa có tuyến mới" không làm mới được lịch — crew phải chờ
+  // hết nhịp poll hoặc tự kéo xuống, và đó là một lý do phải logout/login mới
+  // thấy tuyến mới. `schedule` không gắn tripId (key là ["schedule", from, to])
+  // nên invalidate theo prefix để phủ mọi cửa sổ ngày đang mở.
+  if (
+    action.type === "OPEN_TRIP_DETAIL" ||
+    action.type === "OPEN_TRIP_TRACKING"
+  ) {
+    keys.push(["schedule"]);
+  }
+
   if (tripId) {
     keys.push(["manifest", tripId], ["seat-map", tripId], ["trip", tripId]);
     // Đổi tuyến (TRIP_UPDATE + notificationType=TRIP_ROUTE_CHANGED) đổi cả

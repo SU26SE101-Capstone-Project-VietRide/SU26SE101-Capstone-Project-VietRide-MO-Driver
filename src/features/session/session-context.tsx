@@ -8,6 +8,7 @@ import {
     useState,
     type PropsWithChildren,
 } from "react";
+import { AppState } from "react-native";
 
 import {
     bootstrapSession,
@@ -81,6 +82,15 @@ function toSession(user: AuthUser): CrewSession | null {
   };
 }
 
+function isSameSession(left: CrewSession, right: CrewSession): boolean {
+  return (
+    left.crewId === right.crewId &&
+    left.displayName === right.displayName &&
+    left.operatorName === right.operatorName &&
+    left.role === right.role
+  );
+}
+
 const SessionContext = createContext<SessionContextValue | null>(null);
 
 export function SessionProvider({ children }: PropsWithChildren) {
@@ -118,6 +128,63 @@ export function SessionProvider({ children }: PropsWithChildren) {
       cancelled = true;
     };
   }, []);
+
+  // Mỗi lần app quay lại foreground: đổi access token mới rồi làm mới các danh
+  // sách phân công.
+  //
+  // Crew để app mở suốt ca (nhiều ngày), nên phiên chỉ được dựng lại đúng một
+  // lần lúc mở app lạnh. Access token mang claim `role` và `operatorId`, còn
+  // `schedule` là nơi duy nhất chứa danh sách ca — nhà xe giao tuyến giữa ca
+  // thì app đang chạy không có mốc nào để nhận biết, và đó là lý do phải
+  // logout/login mới thấy tuyến mới. Foreground là mốc rẻ và đúng lúc nhất:
+  // crew mở lại app chính là lúc họ muốn xem lịch mới.
+  const syncSession = useCallback(async () => {
+    let user: AuthUser | null;
+
+    try {
+      user = await bootstrapSession();
+    } catch {
+      // Lỗi mạng: giữ nguyên phiên, lần foreground sau thử lại. KHÔNG đá ra
+      // màn login vì mất mạng — crew đang ở bến xe sóng yếu là chuyện thường.
+      return;
+    }
+
+    const nextSession = user ? toSession(user) : null;
+
+    // Refresh token đã bị revoke (đổi mật khẩu, nhà xe khoá tài khoản) hoặc vai
+    // trò không còn thuộc app crew → về màn login.
+    if (!nextSession) {
+      setSession(null);
+      setStatus("signedOut");
+      queryClient.clear();
+      return;
+    }
+
+    // Chỉ setSession khi có field thật sự đổi: object mới mỗi lần foreground sẽ
+    // làm mọi consumer của context render lại vô ích.
+    setSession((current) =>
+      current && isSameSession(current, nextSession) ? current : nextSession,
+    );
+
+    await Promise.all([
+      queryClient.invalidateQueries({ queryKey: ["schedule"] }),
+      queryClient.invalidateQueries({ queryKey: ["shuttle-trips"] }),
+    ]);
+  }, [queryClient]);
+
+  useEffect(() => {
+    if (status !== "signedIn") {
+      return;
+    }
+
+    const subscription = AppState.addEventListener("change", (next) => {
+      if (next === "active") {
+        void syncSession();
+      }
+    });
+
+    return () => subscription.remove();
+  }, [status, syncSession]);
 
   // Refresh fail giữa phiên → client báo về đây để đá ra màn login.
   useEffect(() => {

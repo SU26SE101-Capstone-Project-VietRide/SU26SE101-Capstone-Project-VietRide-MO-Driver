@@ -27,6 +27,10 @@ type SelectedTripContextValue = {
   // Các chuyến trong cửa sổ hiển thị (hôm nay + rạng sáng mai) để dựng bộ
   // chọn. Rỗng khi lịch chưa tải xong.
   trips: ScheduleTrip[];
+  // Ca đã được phân công nhưng còn NGOÀI cửa sổ trên (điển hình: tuyến vừa
+  // được giao cho ngày mai). Các màn vận hành dùng nó để nói rõ "chưa tới giờ"
+  // thay vì để crew hiểu là app chưa nhận được tuyến. `null` khi không có.
+  nextAssignedTrip: ScheduleTrip | null;
   selectTrip: (tripId: string) => void;
   // Bỏ lựa chọn thủ công, quay về chuyến app tự xác định.
   clearSelection: () => void;
@@ -75,6 +79,9 @@ export function SelectedTripProvider({ children }: PropsWithChildren) {
     const cutoff = new Date(
       `${tomorrow}T0${NEXT_DAY_CUTOFF_HOUR}:00:00`,
     ).getTime();
+    // Chốt "bây giờ" một lần mỗi khi data đổi, cùng cách useActiveTrip làm —
+    // không gọi Date.now() rải rác trong lúc render.
+    const nowMs = new Date().getTime();
     const todayTrips = (scheduleData?.trips ?? [])
       .filter((item) => {
         const departure = new Date(item.departureDateTime);
@@ -109,10 +116,30 @@ export function SelectedTripProvider({ children }: PropsWithChildren) {
 
     const trip = selected ?? active ?? trips[0] ?? null;
 
+    // Ca đã phân công nhưng chưa vào cửa sổ (ngày mai sau NEXT_DAY_CUTOFF_HOUR).
+    // Lấy sẵn từ CHÍNH `scheduleData` đang có — khung truy vấn đã là (hôm nay,
+    // ngày mai) nên không thêm request nào. Có nó thì màn vận hành nói được
+    // "ca kế tiếp: …" thay vì chỉ "chưa có chuyến", vốn khiến crew tưởng app
+    // chưa nhận được tuyến vừa được giao.
+    const inWindow = new Set(trips.map((item) => item.tripId));
+    const nextAssignedTrip =
+      (scheduleData?.trips ?? [])
+        .filter(
+          (item) =>
+            !inWindow.has(item.tripId) &&
+            new Date(item.departureDateTime).getTime() > nowMs,
+        )
+        .sort(
+          (a, b) =>
+            new Date(a.departureDateTime).getTime() -
+            new Date(b.departureDateTime).getTime(),
+        )[0] ?? null;
+
     return {
       tripId: trip?.tripId ?? null,
       trip,
       trips,
+      nextAssignedTrip,
       selectTrip: setSelectedTripId,
       clearSelection: () => setSelectedTripId(null),
       isManualSelection: selected != null,

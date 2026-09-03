@@ -52,6 +52,7 @@ import {
   type BookingUpdatedEvent,
   type RagRating,
   type ReportIncidentData,
+  type ScheduleTrip,
   type SeatCell,
   type SeatMapAisle,
   type TripDetails,
@@ -79,6 +80,7 @@ import {
     WEEKDAY_FULL,
     WEEKDAY_SHORT,
     formatTimeHM,
+    formatTripDayLabel,
     isoDateOf,
     mapAssignmentRoleLabel,
     normalizeTripStatus,
@@ -322,6 +324,25 @@ type ChatMessage = {
   feedback?: RagRating;
 };
 
+// Ghép thông tin ca kế tiếp vào câu "chưa có chuyến".
+//
+// Cửa sổ vận hành chỉ tính hôm nay + rạng sáng mai, nên tuyến vừa được nhà xe
+// giao cho ngày mai sẽ không có chip nào ở các màn này. Nếu chỉ nói "hôm nay
+// không có chuyến" thì crew hiểu là app chưa nhận được phân công và đi
+// logout/login — chính là cái hiểu sai cần chặn.
+function withNextAssignedHint(
+  message: string,
+  nextAssignedTrip: ScheduleTrip | null,
+): string {
+  if (!nextAssignedTrip) {
+    return message;
+  }
+
+  const day = formatTripDayLabel(nextAssignedTrip.departureDateTime);
+  const time = formatTimeHM(nextAssignedTrip.departureDateTime);
+  return `${message} Ca kế tiếp đã được giao: ${day} lúc ${time}.`;
+}
+
 export function DriverOverviewScreen() {
   const router = useRouter();
   const { displayName } = useAuthenticatedSession();
@@ -541,7 +562,10 @@ export function DriverTripScreen() {
       ) : !activeTrip.trip ? (
         <EmptyCard
           icon="event-busy"
-          message="Hôm nay bạn không có chuyến nào đang chạy hoặc sắp khởi hành."
+          message={withNextAssignedHint(
+            "Hôm nay bạn không có chuyến nào đang chạy hoặc sắp khởi hành.",
+            activeTrip.nextAssignedTrip,
+          )}
         />
       ) : detailsQuery.isError ? (
         <ErrorCard onRetry={() => void detailsQuery.refetch()} />
@@ -1264,7 +1288,10 @@ export function AssistantBoardingScreen() {
       ) : !activeTrip.trip ? (
         <EmptyCard
           icon="event-busy"
-          message="Hôm nay bạn không có chuyến nào để đón khách."
+          message={withNextAssignedHint(
+            "Hôm nay bạn không có chuyến nào để đón khách.",
+            activeTrip.nextAssignedTrip,
+          )}
         />
       ) : (
         <>
@@ -1901,7 +1928,10 @@ export function AssistantCargoScreen() {
       ) : !tripId ? (
         <EmptyCard
           icon="event-busy"
-          message="Chưa có chuyến đang chạy để xem kiện hàng."
+          message={withNextAssignedHint(
+            "Chưa có chuyến đang chạy để xem kiện hàng.",
+            activeTrip.nextAssignedTrip,
+          )}
         />
       ) : parcelsQuery.isError ? (
         <ErrorCard onRetry={() => void parcelsQuery.refetch()} />
@@ -3739,7 +3769,12 @@ export function AssistantStopsScreen() {
       {activeTrip.isLoading || (tripId && detailsQuery.isLoading) ? (
         <LoadingCard label="Đang tải điểm dừng…" />
       ) : !tripId ? (
-        <EmptyCard message="Chưa có chuyến nào đang chạy." />
+        <EmptyCard
+          message={withNextAssignedHint(
+            "Chưa có chuyến nào đang chạy.",
+            activeTrip.nextAssignedTrip,
+          )}
+        />
       ) : detailsQuery.isError ? (
         <ErrorCard
           message="Không tải được chi tiết chuyến."
