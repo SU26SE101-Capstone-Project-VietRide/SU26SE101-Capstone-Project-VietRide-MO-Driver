@@ -6,7 +6,10 @@ import {
   custodyApprovalStatusLabel,
   incidentStatusLabel,
   incidentTypeLabel,
+  locationLabel,
+  locationPhrase,
   parcelStatusMeta,
+  sizeCategoryLabel,
 } from "@/features/parcels/parcel-format";
 
 // Đây là app tiếng Việt: enum thô của backend lọt lên màn hình là bug, không
@@ -128,5 +131,72 @@ describe("cảnh báo dev khi gặp enum lạ", () => {
     parcelStatusMeta("");
 
     expect(warn).not.toHaveBeenCalled();
+  });
+});
+
+// Card kiện hàng ghép câu "Đã dỡ khỏi xe {locationPhrase}". `locationSnapshot`
+// của backend có lúc chỉ là id điểm dừng, và id đó đã lòi lên card thật —
+// bộ test này khoá lại rằng nhãn vị trí không bao giờ chứa mã kỹ thuật.
+describe("nhãn vị trí không được lòi id", () => {
+  const STOP_ID = "4f0c1234-5678-4abc-9def-0123456789ab";
+
+  it("snapshot đúng bằng uuid thì rơi về nhãn theo loại vị trí", () => {
+    expect(locationLabel({ type: "ROUTE_STOP", name: STOP_ID })).toBe(
+      "Điểm dừng dọc đường",
+    );
+    expect(locationLabel({ type: "DESTINATION_STATION", name: STOP_ID })).toBe(
+      "Bến cuối",
+    );
+  });
+
+  it("uuid bị cắt cụt cũng không được hiện", () => {
+    const label = locationLabel({ type: "VEHICLE", name: "4f0c1234-5678-…" });
+    expect(label).toBe("Trên xe");
+  });
+
+  it("bóc tiền tố enum, bỏ id, giữ tên thật", () => {
+    expect(locationLabel({ type: "ROUTE_STOP", name: `ROUTE_STOP: ${STOP_ID}` })).toBe(
+      "Điểm dừng dọc đường",
+    );
+    expect(locationLabel({ type: "VEHICLE", name: "VEHICLE: 51B-12345" })).toBe(
+      "Trên xe 51B-12345",
+    );
+    expect(locationLabel({ type: "ROUTE_STOP", name: `Bến A (${STOP_ID})` })).toBe(
+      "Bến A",
+    );
+  });
+
+  it("tên bến bình thường thì giữ nguyên", () => {
+    expect(
+      locationLabel({ type: "ROUTE_STOP", name: "Bến xe Miền Đông" }),
+    ).toBe("Bến xe Miền Đông");
+    expect(
+      locationLabel({ type: "ROUTE_STOP", name: "Stop B", orderIndex: 1 }),
+    ).toBe("Stop B (điểm 1)");
+  });
+
+  it("locationPhrase ghép câu không kèm id", () => {
+    expect(locationPhrase({ type: "ROUTE_STOP", name: STOP_ID })).toBe(
+      "tại Điểm dừng dọc đường",
+    );
+    expect(locationPhrase({ type: "VEHICLE", name: STOP_ID })).toBe("trên xe");
+    expect(locationPhrase(null)).toBe("chưa rõ vị trí");
+  });
+});
+
+// Dòng "Kích cỡ …" trên card kiện hàng: nhánh default trước kia trả nguyên
+// enum, nên một size mới của backend hiện thành "Kích cỡ OVERSIZED".
+describe("nhãn kích cỡ kiện", () => {
+  it("map đủ 4 mức", () => {
+    expect(sizeCategoryLabel("SMALL")).toBe("Nhỏ");
+    expect(sizeCategoryLabel("MEDIUM")).toBe("Vừa");
+    expect(sizeCategoryLabel("LARGE")).toBe("Lớn");
+    expect(sizeCategoryLabel("EXTRA_LARGE")).toBe("Rất lớn");
+  });
+
+  it("giá trị lạ không lòi enum", () => {
+    jest.spyOn(console, "warn").mockImplementation(() => {});
+    expect(sizeCategoryLabel("OVERSIZED")).toBe("Không rõ");
+    expect(sizeCategoryLabel(null)).toBe("Không rõ");
   });
 });

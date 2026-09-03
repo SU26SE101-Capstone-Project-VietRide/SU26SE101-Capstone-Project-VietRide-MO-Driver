@@ -21,7 +21,17 @@ export function proposalStatusMeta(status: RouteChangeProposalStatus): {
   label: string;
   tone: Tone;
 } {
-  return STATUS_META[status] ?? { label: status, tone: "neutral" };
+  const meta = STATUS_META[status];
+  if (meta) {
+    return meta;
+  }
+  // Enum lạ chỉ log ở dev — không đẩy chuỗi tiếng Anh của backend ra UI.
+  if (__DEV__ && status) {
+    console.warn(
+      `[proposal-format] chưa có label tiếng Việt cho trạng thái đề xuất: ${status}`,
+    );
+  }
+  return { label: "Không rõ trạng thái", tone: "neutral" };
 }
 
 // Vì sao đề xuất bị hệ thống chốt thay vì admin bấm từ chối.

@@ -125,7 +125,9 @@ export function sizeCategoryLabel(size: string | null | undefined): string {
     case "EXTRA_LARGE":
       return "Rất lớn";
     default:
-      return size ?? "—";
+      unknownEnum("kích cỡ kiện", size);
+      // Card đã ghép sẵn tiền tố "Kích cỡ …" nên nhãn chỉ cần "Không rõ".
+      return "Không rõ";
   }
 }
 
@@ -369,9 +371,18 @@ export function locationLabel(
     return "—";
   }
   if (location.name) {
+    // Tên có thể chỉ là mã kỹ thuật (id điểm dừng) — khi đó dùng nhãn theo
+    // loại vị trí, đừng đưa id lên màn hình.
     const name = humanizeLocationSnapshot(location.name);
+    if (!name) {
+      return locationTypeLabel(location.type);
+    }
+    // `orderIndex` của backend đánh số từ 1 (API-Trip: `orderIndex>0`, và mọi
+    // ví dụ trong docs đều bắt đầu từ 1) → in thẳng, KHÔNG cộng thêm. Cộng 1
+    // thì điểm dừng đầu tiên hiện thành "điểm 2", lệch với màn chuyến và màn
+    // điểm dừng vốn in nguyên orderIndex.
     return location.orderIndex != null
-      ? `${name} (điểm ${location.orderIndex + 1})`
+      ? `${name} (điểm ${location.orderIndex})`
       : name;
   }
   return locationTypeLabel(location.type);
@@ -421,27 +432,61 @@ function locationTypeLabel(type: string | null | undefined): string {
   return "Vị trí khác";
 }
 
-const UUID_PATTERN =
-  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+// UUID đầy đủ, và cả UUID bị cắt cụt ("4f0c1234-5678-…") vì backend/log có
+// lúc rút gọn. Không neo đầu-cuối để dò được id nằm lẫn giữa câu.
+const ID_PATTERN =
+  /[0-9a-f]{8}-[0-9a-f]{4}(?:-[0-9a-f]{4})?(?:-[0-9a-f]{4})?(?:-[0-9a-f]{0,12})?/gi;
+
+// Chuỗi không còn gì cho người đọc: rỗng, hoặc chỉ còn một chuỗi hex/số dài —
+// tức là mã kỹ thuật, không phải tên bến. Ngưỡng 12 ký tự để KHÔNG bắt oan
+// biển số xe ("51B-12345" toàn ký tự hex nhưng là thông tin thật cần hiện).
+function isIdentifierOnly(value: string): boolean {
+  const cleaned = value.replace(/[\s\-_:.,()•…]+/g, "");
+  return (
+    cleaned.length === 0 ||
+    /^[0-9a-f]{12,}$/i.test(cleaned) ||
+    /^\d{8,}$/.test(cleaned)
+  );
+}
+
+// Bỏ mọi mã id lẫn trong tên rồi dọn dấu ngoặc/gạch còn treo lại, để
+// "Bến A (4f0c1234-…)" ra "Bến A" chứ không phải "Bến A ()".
+function stripIdentifiers(value: string): string {
+  return value
+    .replace(ID_PATTERN, " ")
+    .replace(/\(\s*\)/g, " ")
+    .replace(/\s*[•·|]\s*$/g, "")
+    .replace(/[\s\-_:,]+$/g, "")
+    .replace(/^[\s\-_:,]+/g, "")
+    .replace(/\s{2,}/g, " ")
+    .trim();
+}
 
 // `locationSnapshot` backend gửi có khi là chuỗi kỹ thuật dạng
 // "VEHICLE: 4f0c…" hoặc "ROUTE_STOP: <uuid>" — để nguyên là enum thô lòi lên
 // màn hình phụ xe (quan sát thực tế 30/08: "Nhận từ chuyến khác tại VEHICLE:
 // …"). Bóc tiền tố enum ra, dịch sang tiếng Việt; phần đuôi là UUID thì bỏ
 // hẳn vì phụ xe không đọc được, còn biển số/tên bến thì giữ lại.
+//
+// Trả về chuỗi rỗng khi tên chỉ là mã kỹ thuật (không có tiền tố enum để dịch,
+// ví dụ snapshot đúng bằng id điểm dừng) — người gọi rơi về nhãn theo loại vị
+// trí. Đây là ca đã lòi id lên card "Đã dỡ khỏi xe tại …".
 function humanizeLocationSnapshot(name: string): string {
-  const match = name.match(/^([A-Z][A-Z_]{3,})\s*[:\-–]\s*(.*)$/);
+  const trimmed = name.trim();
+  // Tiền tố enum: chấp cả chữ thường vì snapshot của backend không nhất quán.
+  const match = trimmed.match(/^([A-Za-z][A-Za-z_]{3,})\s*[:\-–]\s*(.*)$/);
   if (!match) {
-    return name;
+    const detail = stripIdentifiers(trimmed);
+    return isIdentifierOnly(detail) ? "" : detail;
   }
   const [, rawType, rest] = match;
-  const label = LOCATION_TYPE_LABELS[rawType];
+  const label = LOCATION_TYPE_LABELS[rawType.toUpperCase()];
+  const detail = stripIdentifiers(rest);
   if (!label) {
     unknownEnum("location snapshot type", rawType);
-    return rest.trim() || "Vị trí khác";
+    return isIdentifierOnly(detail) ? "" : detail;
   }
-  const detail = rest.trim();
-  return !detail || UUID_PATTERN.test(detail) ? label : `${label} ${detail}`;
+  return isIdentifierOnly(detail) ? label : `${label} ${detail}`;
 }
 
 // Loại custody event (lastEventType / createdCustodyEvent.eventType).

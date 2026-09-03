@@ -124,5 +124,12 @@ export function mapAssignmentRoleLabel(assignmentRole: string): string {
     return "Phụ xe";
   }
 
-  return assignmentRole;
+  // Vai trò lạ: hiện câu tiếng Việt chứ không phải enum của backend — chuỗi này
+  // nằm ngay dưới tên chuyến ở màn lịch làm việc ("Vai trò: …").
+  if (__DEV__ && assignmentRole) {
+    console.warn(
+      `[trip-format] chưa có label tiếng Việt cho vai trò: ${assignmentRole}`,
+    );
+  }
+  return "Nhân viên trên xe";
 }

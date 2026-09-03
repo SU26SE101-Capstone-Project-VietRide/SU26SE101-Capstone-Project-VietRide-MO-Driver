@@ -1,7 +1,16 @@
 import type { Tone } from "@/features/operations/mock-data";
 
-// Nhãn + tông màu cho trạng thái ShuttleTrip. Giá trị lạ (BE thêm sau) hiện
-// nguyên văn với tone trung tính thay vì crash/ẩn.
+// Đây là app tiếng Việt: enum thô của backend lòi lên màn hình là bug. Giá trị
+// lạ (BE thêm sau) chỉ log ở dev, UI hiện câu tiếng Việt chung chung.
+function unknownEnum(kind: string, value: string | null | undefined): void {
+  if (__DEV__ && value != null && value !== "") {
+    console.warn(
+      `[shuttle-format] chưa có label tiếng Việt cho ${kind}: ${value}`,
+    );
+  }
+}
+
+// Nhãn + tông màu cho trạng thái ShuttleTrip.
 export function shuttleTripStatusOf(status: string): {
   label: string;
   tone: Tone;
@@ -16,7 +25,8 @@ export function shuttleTripStatusOf(status: string): {
     case "CANCELLED":
       return { label: "Đã hủy", tone: "danger" };
     default:
-      return { label: status, tone: "neutral" };
+      unknownEnum("trạng thái chuyến trung chuyển", status);
+      return { label: "Không rõ trạng thái", tone: "neutral" };
   }
 }
 
@@ -37,7 +47,8 @@ export function shuttleStopStatusOf(status: string): {
     case "CANCELLED":
       return { label: "Đã hủy", tone: "danger" };
     default:
-      return { label: status, tone: "neutral" };
+      unknownEnum("trạng thái điểm đón", status);
+      return { label: "Không rõ trạng thái", tone: "neutral" };
   }
 }
 
@@ -50,6 +61,7 @@ export function shuttleDirectionLabelOf(direction: string): string {
     case "OUTBOUND_FROM_STATION":
       return "Trả khách từ bến";
     default:
-      return direction;
+      unknownEnum("chiều chạy trung chuyển", direction);
+      return "Chuyến trung chuyển";
   }
 }
