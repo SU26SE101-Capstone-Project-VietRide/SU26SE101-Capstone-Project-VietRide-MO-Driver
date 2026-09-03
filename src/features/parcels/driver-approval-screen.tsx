@@ -3,6 +3,7 @@ import { useLocalSearchParams, useRouter } from "expo-router";
 import { useState } from "react";
 import { Alert, StyleSheet, Text, TextInput, View } from "react-native";
 
+import { useKeepInputVisible } from "@/components/keyboard-aware-scroll";
 import { ErrorCard, LoadingCard } from "@/components/query-state";
 import { Fonts, Spacing, type Palette } from "@/constants/theme";
 import {
@@ -36,6 +37,11 @@ import { useTheme, useThemedStyles } from "@/hooks/use-theme";
 // LƯU Ý: backend chưa có endpoint liệt kê phiếu đang chờ (§22 gap 1, 2) nên màn
 // này luôn phải được mở kèm ID — từ thông báo, hoặc từ `approvalRequestId`
 // trong lỗi PARCEL_STOP_RECONCILIATION_REQUIRED khi rời điểm bị chặn.
+
+// Chỗ cần chừa dưới ô ghi chú: hàng nút Duyệt/Từ chối (nút small ~40px) cộng
+// khoảng cách trong card, để bàn phím mở ra vẫn bấm được ngay.
+const DECISION_ROW_HEIGHT = 56;
+
 export function DriverParcelApprovalScreen() {
   const params = useLocalSearchParams<{
     parcelId?: string;
@@ -49,6 +55,7 @@ export function DriverParcelApprovalScreen() {
   const styles = useThemedStyles(makeStyles);
   const theme = useTheme();
   const [note, setNote] = useState("");
+  const reserveBelowInput = useKeepInputVisible();
 
   const exceptionQuery = useCustodyExceptionRequest(parcelId);
   const departureQuery = useStopDepartureApproval(requestId);
@@ -151,6 +158,13 @@ export function DriverParcelApprovalScreen() {
                 // Guide (2) §E3: note tối đa 2000 ký tự.
                 maxLength={2000}
                 multiline
+                numberOfLines={4}
+                textAlignVertical="top"
+                // Hàng nút Duyệt/Từ chối nằm ngay dưới ô này: đặt chỗ trước để
+                // bàn phím mở ra vẫn thấy cả ô ghi chú lẫn nút bấm, khỏi phải
+                // cuộn tay giữa lúc đang gõ.
+                onFocus={() => reserveBelowInput(DECISION_ROW_HEIGHT)}
+                onBlur={() => reserveBelowInput(0)}
               />
               {errorMessage ? (
                 <Text style={styles.error}>{errorMessage}</Text>

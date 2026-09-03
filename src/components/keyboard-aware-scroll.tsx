@@ -1,24 +1,26 @@
 import {
-    useCallback,
-    useEffect,
-    useRef,
-    useState,
-    type PropsWithChildren,
-    type ReactNode,
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useRef,
+  useState,
+  type PropsWithChildren,
+  type ReactNode,
 } from "react";
 import {
-    Dimensions,
-    Keyboard,
-    KeyboardAvoidingView,
-    Platform,
-    ScrollView,
-    StyleSheet,
-    TextInput,
-    View,
-    type KeyboardEvent,
-    type ScrollViewProps,
-    type StyleProp,
-    type ViewStyle,
+  Dimensions,
+  Keyboard,
+  KeyboardAvoidingView,
+  Platform,
+  ScrollView,
+  StyleSheet,
+  TextInput,
+  View,
+  type KeyboardEvent,
+  type ScrollViewProps,
+  type StyleProp,
+  type ViewStyle,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
@@ -37,6 +39,22 @@ import { Spacing } from "@/constants/theme";
 // (đăng nhập, quên mật khẩu, thiết lập mật khẩu) không được che chắn gì. Tách
 // thành component thay vì hook để toàn bộ ref/đo đạc nằm gọn bên trong — màn
 // dùng chỉ cần bọc nội dung vào đây.
+
+// Ô nhập có nút bấm ngay bên dưới (ghi chú + nút Duyệt trong cùng card) thì
+// "ô vừa nổi lên trên bàn phím" là chưa đủ: gõ xong người dùng vẫn không thấy
+// nút để bấm. Màn dùng gọi `useKeepInputVisible()` rồi đặt chỗ trước cho phần
+// nằm dưới ô nhập khi ô đó được focus.
+const KeepInputVisibleContext = createContext<((px: number) => void) | null>(
+  null,
+);
+
+function noop() {}
+
+// Ngoài KeyboardAwareScroll thì trả no-op để màn dùng không phải kiểm tra null.
+export function useKeepInputVisible(): (px: number) => void {
+  return useContext(KeepInputVisibleContext) ?? noop;
+}
+
 export function KeyboardAwareScroll({
   background,
   children,
@@ -70,6 +88,10 @@ export function KeyboardAwareScroll({
   // không kích hoạt render lại giữa lúc đang gõ.
   const scrollY = useRef(0);
   const keyboardTop = useRef(Number.POSITIVE_INFINITY);
+  // Chiều cao phần cần thấy thêm bên dưới ô đang gõ (hàng nút Duyệt/Từ chối…).
+  // Giữ trong ref vì keepInputVisible đọc lại nó trong nhịp trễ, kể cả khi
+  // bàn phím mở sau lúc focus.
+  const reservedBelow = useRef(0);
 
   // Giữ ô ĐANG GÕ nằm trên bàn phím.
   //
@@ -104,7 +126,7 @@ export function KeyboardAwareScroll({
 
       focused.measureInWindow((_x, y, _width, height) => {
         // Chừa một khoảng thở dưới ô để còn thấy được viền và dòng gợi ý.
-        const margin = Spacing.four;
+        const margin = Spacing.four + reservedBelow.current;
         const overlap = y + height + margin - keyboardTop.current;
         if (overlap <= 0) {
           // Ô đã nằm trên bàn phím rồi thì ĐỪNG cuộn — cuộn thừa chính là cảm
@@ -120,6 +142,15 @@ export function KeyboardAwareScroll({
     setTimeout(nudge, 50);
     setTimeout(nudge, 300);
   }, []);
+
+  // Ô nhập gọi hàm này lúc focus (đặt chỗ) và lúc blur (trả về 0).
+  const reserveBelowInput = useCallback(
+    (px: number) => {
+      reservedBelow.current = Math.max(0, px);
+      keepInputVisible();
+    },
+    [keepInputVisible],
+  );
 
   useEffect(() => {
     const onKeyboardFrame = (event: KeyboardEvent) => {
@@ -166,69 +197,71 @@ export function KeyboardAwareScroll({
   }, [keepInputVisible]);
 
   return (
-    <KeyboardAvoidingView
-      // iOS không tự co layout khi bàn phím hiện → phải đệm bằng padding.
-      // Android đã có windowSoftInputMode=adjustResize nên để undefined, thêm
-      // behavior vào là bị đẩy hai lần.
-      behavior={Platform.OS === "ios" ? "padding" : undefined}
-      style={[styles.fill, style]}
-    >
-      {/* View đo đạc: KeyboardAvoidingView không cho gắn ref kiểu View nên đo
-          trên lớp bọc bên trong (cùng kích thước). */}
-      <View
-        ref={rootRef}
-        collapsable={false}
-        style={styles.fill}
-        // Bàn phím ĐANG MỞ mà người dùng chạm sang một ô khác thì sự kiện
-        // keyboardDidShow KHÔNG phát lại → không ai cuộn, ô vừa chạm nằm dưới
-        // bàn phím. Đây là ca hay gặp ở card kiện hàng: gõ số cân xong chạm
-        // xuống ô ghi chú. Nghe ở lớp bọc để mọi cú chạm đều kiểm tra lại; hàm
-        // này tự thoát nếu bàn phím đóng hoặc ô đã nằm trên bàn phím nên không
-        // gây cuộn thừa. Trả false để không giành responder của con.
-        onStartShouldSetResponderCapture={() => {
-          keepInputVisible();
-          return false;
-        }}
+    <KeepInputVisibleContext.Provider value={reserveBelowInput}>
+      <KeyboardAvoidingView
+        // iOS không tự co layout khi bàn phím hiện → phải đệm bằng padding.
+        // Android đã có windowSoftInputMode=adjustResize nên để undefined, thêm
+        // behavior vào là bị đẩy hai lần.
+        behavior={Platform.OS === "ios" ? "padding" : undefined}
+        style={[styles.fill, style]}
       >
-        {background}
-
-        <ScrollView
-          ref={scrollRef}
-          style={scrollStyle}
-          // Ô mô tả là multiline, gõ dài thì nó cao dần xuống dưới và chui vào
-          // vùng bàn phím → mỗi lần nội dung cao lên thì cuộn theo.
-          onContentSizeChange={() => keepInputVisible()}
-          // Cần vị trí cuộn thật để tính "cuộn thêm bao nhiêu là vừa đủ".
-          onScroll={(event) => {
-            scrollY.current = event.nativeEvent.contentOffset.y;
+        {/* View đo đạc: KeyboardAvoidingView không cho gắn ref kiểu View nên đo
+          trên lớp bọc bên trong (cùng kích thước). */}
+        <View
+          ref={rootRef}
+          collapsable={false}
+          style={styles.fill}
+          // Bàn phím ĐANG MỞ mà người dùng chạm sang một ô khác thì sự kiện
+          // keyboardDidShow KHÔNG phát lại → không ai cuộn, ô vừa chạm nằm dưới
+          // bàn phím. Đây là ca hay gặp ở card kiện hàng: gõ số cân xong chạm
+          // xuống ô ghi chú. Nghe ở lớp bọc để mọi cú chạm đều kiểm tra lại; hàm
+          // này tự thoát nếu bàn phím đóng hoặc ô đã nằm trên bàn phím nên không
+          // gây cuộn thừa. Trả false để không giành responder của con.
+          onStartShouldSetResponderCapture={() => {
+            keepInputVisible();
+            return false;
           }}
-          scrollEventThrottle={16}
-          // Bàn phím: tự chừa chỗ để ô nhập/nút bấm cuối form không bị che, và
-          // cho phép chạm thẳng vào nút khi bàn phím đang mở (mặc định phải
-          // chạm 2 lần — lần đầu chỉ để đóng bàn phím, và đó chính là lúc người
-          // dùng tưởng nút bị lỗi rồi bấm lại).
-          automaticallyAdjustKeyboardInsets
-          keyboardShouldPersistTaps="handled"
-          keyboardDismissMode="on-drag"
-          refreshControl={refreshControl}
-          contentContainerStyle={[
-            contentContainerStyle,
-            {
-              paddingTop,
-              // Bàn phím mở thì chính nó đã phủ lên thanh điều hướng → cộng
-              // thêm safe-area đáy nữa là thừa ra một mảng trống.
-              paddingBottom:
-                (keyboardHeight > 0 ? keyboardHeight : insets.bottom) +
-                extraBottomPadding,
-            },
-          ]}
         >
-          {children}
-        </ScrollView>
+          {background}
 
-        {foreground}
-      </View>
-    </KeyboardAvoidingView>
+          <ScrollView
+            ref={scrollRef}
+            style={scrollStyle}
+            // Ô mô tả là multiline, gõ dài thì nó cao dần xuống dưới và chui vào
+            // vùng bàn phím → mỗi lần nội dung cao lên thì cuộn theo.
+            onContentSizeChange={() => keepInputVisible()}
+            // Cần vị trí cuộn thật để tính "cuộn thêm bao nhiêu là vừa đủ".
+            onScroll={(event) => {
+              scrollY.current = event.nativeEvent.contentOffset.y;
+            }}
+            scrollEventThrottle={16}
+            // Bàn phím: tự chừa chỗ để ô nhập/nút bấm cuối form không bị che, và
+            // cho phép chạm thẳng vào nút khi bàn phím đang mở (mặc định phải
+            // chạm 2 lần — lần đầu chỉ để đóng bàn phím, và đó chính là lúc người
+            // dùng tưởng nút bị lỗi rồi bấm lại).
+            automaticallyAdjustKeyboardInsets
+            keyboardShouldPersistTaps="handled"
+            keyboardDismissMode="on-drag"
+            refreshControl={refreshControl}
+            contentContainerStyle={[
+              contentContainerStyle,
+              {
+                paddingTop,
+                // Bàn phím mở thì chính nó đã phủ lên thanh điều hướng → cộng
+                // thêm safe-area đáy nữa là thừa ra một mảng trống.
+                paddingBottom:
+                  (keyboardHeight > 0 ? keyboardHeight : insets.bottom) +
+                  extraBottomPadding,
+              },
+            ]}
+          >
+            {children}
+          </ScrollView>
+
+          {foreground}
+        </View>
+      </KeyboardAvoidingView>
+    </KeepInputVisibleContext.Provider>
   );
 }
 
